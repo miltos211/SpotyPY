@@ -1,0 +1,101 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project-specific files and directories
+claude.md
+logs/
+old_scirpts/
+old_scripts/
+out/
+songs/
+trash/
+start.md
+
+# Development files
+todo.txt
+notes.txt
+*.bak
+*.backup
+
+# Spotify credentials (if any)
+.env
+*.env
+client_secret.json
+spotify_credentials.json
+
+# YouTube Music credentials
+oauth.json
+browser.json
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.part
+*.ytdl
+
+# Audio files (in case they end up in project root)
+*.mp3
+*.wav
+*.flac
+*.m4a
+*.ogg
+
+# JSON output files (playlist exports)
+*.json
+!requirements.json
+!package.json
+
+# Screenshots and images (unless needed)
+*.png
+*.jpg
+*.jpeg
+*.gif
+!logo.*
+!icon.*
