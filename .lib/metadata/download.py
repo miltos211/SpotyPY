@@ -5,10 +5,11 @@ import re
 import time
 from urllib.parse import quote
 
-def debug_log(message, level="INFO"):
-    """Simple debug logging function"""
-    timestamp = time.strftime("%H:%M:%S")
-    print(f"[{timestamp}] [{level}] {message}")
+# Import proper logging system
+from utils.logging import get_logger
+
+# Initialize logger for this module
+logger = get_logger("download")
 
 def ensure_output_dir(path):
     """Create directory if it doesn't exist"""
@@ -17,14 +18,27 @@ def ensure_output_dir(path):
         print(f"Created directory: {path}")
     return path
 
-def run_yt_dlp(video_url, output_dir, audio_format="mp3", audio_quality="0"):
-    """Download audio from YouTube using yt-dlp"""
+def run_yt_dlp(video_url, output_dir, audio_format="mp3", audio_quality="0", custom_filename=None):
+    """Download audio from YouTube using yt-dlp
+    
+    Args:
+        video_url: YouTube video URL
+        output_dir: Directory to save the file
+        audio_format: Audio format (default: mp3)
+        audio_quality: Audio quality (default: 0)
+        custom_filename: Custom filename without extension (avoids race conditions in threaded downloads)
+    """
     try:
         # Ensure output directory exists
         ensure_output_dir(output_dir)
         
-        # Create yt-dlp command
-        output_template = os.path.join(output_dir, "%(title)s.%(ext)s")
+        # Create yt-dlp command with thread-safe filename
+        if custom_filename:
+            # Use custom filename to prevent race conditions between threads
+            output_template = os.path.join(output_dir, f"{custom_filename}.%(ext)s")
+        else:
+            # Fall back to YouTube title (legacy behavior)
+            output_template = os.path.join(output_dir, "%(title)s.%(ext)s")
         
         cmd = [
             "yt-dlp",
@@ -34,6 +48,13 @@ def run_yt_dlp(video_url, output_dir, audio_format="mp3", audio_quality="0"):
             "--no-playlist",  # Only download single video
             "--ignore-errors",  # Continue on errors
             "--force-overwrites",  # Overwrite existing files to ensure metadata is updated
+            "--sleep-interval", "5",  # 5 seconds between downloads (anti-bot)
+            "--max-sleep-interval", "15",  # Random up to 15 seconds
+            "--limit-rate", "1M",  # 1MB/s bandwidth limit (appears more human)
+            "--concurrent-fragments", "2",  # Limit fragments per video (less aggressive)
+            "--extractor-args", "youtube:player_client=web,mweb",  # Force web clients (avoid DRM issues)
+            "--user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",  # Your Chrome user agent
+            "--extractor-args", "youtube:player_skip=configs",  # Skip problematic YouTube player config checks
             "-o", output_template,
             video_url
         ]
@@ -43,25 +64,39 @@ def run_yt_dlp(video_url, output_dir, audio_format="mp3", audio_quality="0"):
         
         if result.returncode == 0:
             # Try to find the downloaded file
-            # yt-dlp should have created a file, let's find it
-            files = os.listdir(output_dir)
-            audio_files = [f for f in files if f.endswith(f'.{audio_format}')]
-            
-            if audio_files:
-                # Get the most recently created file
-                latest_file = max(audio_files, key=lambda f: os.path.getctime(os.path.join(output_dir, f)))
-                file_path = os.path.join(output_dir, latest_file)
+            if custom_filename:
+                # With custom filename, we know exactly what file to expect (thread-safe)
+                expected_file = f"{custom_filename}.{audio_format}"
+                file_path = os.path.join(output_dir, expected_file)
                 
-                return {
-                    "status": 200,
-                    "path": file_path,
-                    "message": "Download successful"
-                }
+                if os.path.exists(file_path):
+                    # File exists as expected
+                    pass
+                else:
+                    # Fallback: search for the file in case yt-dlp modified the name
+                    files = os.listdir(output_dir)
+                    matching_files = [f for f in files if f.startswith(custom_filename) and f.endswith(f'.{audio_format}')]
+                    if matching_files:
+                        file_path = os.path.join(output_dir, matching_files[0])
+                    else:
+                        return {"status": 404, "error": f"Expected file {expected_file} not found after download"}
             else:
-                return {
-                    "status": 500,
-                    "error": "Download completed but file not found"
-                }
+                # Legacy mode: find most recent file (race condition prone)
+                files = os.listdir(output_dir)
+                audio_files = [f for f in files if f.endswith(f'.{audio_format}')]
+                
+                if audio_files:
+                    latest_file = max(audio_files, key=lambda f: os.path.getctime(os.path.join(output_dir, f)))
+                    file_path = os.path.join(output_dir, latest_file)
+                else:
+                    return {"status": 404, "error": "No audio files found after download"}
+            
+            # Return success for both custom and legacy modes
+            return {
+                "status": 200,
+                "path": file_path,
+                "message": "Download successful"
+            }
         else:
             # Check if it's a blocking error
             error_text = result.stderr.lower()
@@ -187,44 +222,44 @@ def get_song_duration_seconds(entry):
         duration_ms = spotify_data.get('duration_ms')
         if duration_ms:
             duration_seconds = duration_ms / 1000
-            debug_log(f"Song duration: {duration_seconds} seconds ({duration_ms}ms)")
+            logger.debug(f"Song duration: {duration_seconds} seconds ({duration_ms}ms)")
             return duration_seconds
     except Exception as e:
-        debug_log(f"Could not get song duration: {e}", "WARN")
+        logger.warning(f"Could not get song duration: {e}")
     return None
 
 def process_song(index, entry, total, output_dir):
-    debug_log(f"=== Processing song {index}/{total} ===")
+    logger.debug(f"=== Processing song {index}/{total} ===")
     
     # Log entry structure
-    debug_log(f"Entry keys: {list(entry.keys())}")
-    debug_log(f"Spotify data: {entry.get('spotify', {}).get('name', 'Unknown')} by {entry.get('spotify', {}).get('artists', ['Unknown'])}")
+    logger.debug(f"Entry keys: {list(entry.keys())}")
+    logger.debug(f"Spotify data: {entry.get('spotify', {}).get('name', 'Unknown')} by {entry.get('spotify', {}).get('artists', ['Unknown'])}")
     
     youtube = entry.get("youtube")
-    debug_log(f"YouTube data present: {youtube is not None}")
+    logger.debug(f"YouTube data present: {youtube is not None}")
     
     if not youtube:
-        debug_log("No YouTube data in entry", "WARN")
+        logger.warning("No YouTube data in entry")
         print(f"[{index}/{total}] Skipped: Missing YouTube metadata")
         return "skipped"
 
-    debug_log(f"YouTube keys: {list(youtube.keys())}")
+    logger.debug(f"YouTube keys: {list(youtube.keys())}")
     
     if not youtube.get("id"):
-        debug_log("No 'id' field in YouTube data", "WARN")
+        logger.warning("No 'id' field in YouTube data")
         print(f"[{index}/{total}] Skipped: Missing YouTube metadata")
         return "skipped"
 
     video_id = youtube["id"].get("videoId")
-    debug_log(f"Video ID extracted: {video_id}")
+    logger.debug(f"Video ID extracted: {video_id}")
     
     if not video_id:
-        debug_log("No videoId in YouTube.id field", "WARN")
+        logger.warning("No videoId in YouTube.id field")
         print(f"[{index}/{total}] Skipped: Missing videoId")
         return "skipped"
 
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-    debug_log(f"Constructed video URL: {video_url}")
+    logger.debug(f"Constructed video URL: {video_url}")
     
     spotify_name = entry.get('spotify', {}).get('name', 'Unknown')
     spotify_artists = entry.get('spotify', {}).get('artists', ['Unknown'])
@@ -232,10 +267,10 @@ def process_song(index, entry, total, output_dir):
     
     print(f"\n[{index}/{total}] Downloading: {spotify_name} by {', '.join(spotify_artists)}")
     print(f" Video URL: {video_url}")
-    debug_log(f"Starting yt-dlp download to: {output_dir}")
+    logger.debug(f"Starting yt-dlp download to: {output_dir}")
 
     # Try primary download
-    debug_log("Calling run_yt_dlp function")
+    logger.debug("Calling run_yt_dlp function")
     download_result = run_yt_dlp(
         video_url=video_url,
         output_dir=output_dir,
@@ -243,12 +278,12 @@ def process_song(index, entry, total, output_dir):
         audio_quality="0"
     )
     
-    debug_log(f"Primary yt-dlp result: {download_result}")
-    debug_log(f"Primary download status: {download_result.get('status', 'Unknown')}")
+    logger.debug(f"Primary yt-dlp result: {download_result}")
+    logger.debug(f"Primary download status: {download_result.get('status', 'Unknown')}")
 
     # If primary download failed with YouTube blocking, try lyrics video fallback
     if download_result["status"] == 500:  # YouTube blocking detected
-        debug_log("Primary download failed due to YouTube blocking, trying lyrics video fallback")
+        logger.info("Primary download failed due to YouTube blocking, trying lyrics video fallback")
         print(f" Primary download blocked by YouTube, searching for lyrics video...")
         
         # Search for lyrics video
@@ -259,7 +294,7 @@ def process_song(index, entry, total, output_dir):
         )
         
         if lyrics_video_id:
-            debug_log(f"Found lyrics video: {lyrics_video_id}")
+            logger.debug(f"Found lyrics video: {lyrics_video_id}")
             lyrics_url = f"https://www.youtube.com/watch?v={lyrics_video_id}"
             print(f" Trying lyrics video: {lyrics_url}")
             
@@ -272,35 +307,35 @@ def process_song(index, entry, total, output_dir):
             )
             
             if lyrics_result["status"] == 200:
-                debug_log("Lyrics video download successful")
+                logger.info("Lyrics video download successful")
                 print(f" Lyrics video download successful!")
                 download_result = lyrics_result
             else:
-                debug_log(f"Lyrics video download also failed: {lyrics_result.get('error', 'Unknown error')}")
+                logger.warning(f"Lyrics video download also failed: {lyrics_result.get('error', 'Unknown error')}")
                 print(f" Lyrics video download also failed: {lyrics_result.get('error', 'Unknown error')}")
         else:
-            debug_log("No suitable lyrics video found")
+            logger.info("No suitable lyrics video found")
             print(f" No suitable lyrics video found")
 
     # Final check if download succeeded
     if download_result["status"] != 200:
-        debug_log(f"All download attempts failed with status {download_result['status']}: {download_result.get('error', 'Unknown error')}", "ERROR")
+        logger.error(f"All download attempts failed with status {download_result['status']}: {download_result.get('error', 'Unknown error')}")
         print(f" All download attempts failed: {download_result['error']}")
         return "failed"
 
     file_path = download_result["path"]
-    debug_log(f"Downloaded file path: {file_path}")
-    debug_log(f"File exists check: {os.path.isfile(file_path) if file_path else 'No path provided'}")
+    logger.debug(f"Downloaded file path: {file_path}")
+    logger.debug(f"File exists check: {os.path.isfile(file_path) if file_path else 'No path provided'}")
     
     if not os.path.isfile(file_path):
-        debug_log(f"Downloaded file not found at: {file_path}", "ERROR")
+        logger.error(f"Downloaded file not found at: {file_path}")
         print(" Skipped: Downloaded file not found.")
         return "skipped"
 
     file_size = os.path.getsize(file_path)
-    debug_log(f"File size: {file_size} bytes")
+    logger.debug(f"File size: {file_size} bytes")
     print(f" Download complete: {file_path}")
     
     result = { "status": "downloaded", "file_path": file_path, "entry": entry }
-    debug_log(f"Returning success result: {result['status']}")
+    logger.debug(f"Returning success result: {result['status']}")
     return result

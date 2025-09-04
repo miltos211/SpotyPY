@@ -9,6 +9,12 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '.lib'))
 
 from youtube.auth import get_youtube_client
 
+# Import CLI utilities for standardized argument parsing
+from utils.cli import create_standard_parser, add_common_arguments, COMMON_EPILOGS
+
+# Initialize logger (will be configured in main())
+logger = None
+
 load_dotenv()
 
 def print_privacy_menu():
@@ -34,7 +40,7 @@ def prompt_privacy_status():
         print(" Invalid option. Try again.")
 
 def create_playlist(youtube, title, privacy):
-    print(f"\n{debug('[API]')} Creating playlist...")
+    logger.debug("[API] Creating playlist...")
     request = youtube.playlists().insert(
         part="snippet,status",
         body={
@@ -66,26 +72,25 @@ def add_video_to_playlist(youtube, playlist_id, video_id):
     )
     request.execute()
 
-def debug(msg):
-    return f"[debug] {msg}"
-
 def parse_arguments():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(
-        description='Create YouTube playlists from enriched JSON data',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
+    epilog = COMMON_EPILOGS.get("uploader", '''
 Examples:
   python yt_PushMK1.py                                           # Interactive mode
   python yt_PushMK1.py -i enriched.json -t "My Playlist"        # Create private playlist
   python yt_PushMK1.py -i enriched.json -t "Public Songs" --privacy public
-  python yt_PushMK1.py --input enriched.json --title "My Mix" --privacy unlisted
-        '''
+  python yt_PushMK1.py --input enriched.json --title "My Mix" --privacy unlisted --debug
+        ''').format(script="yt_PushMK1.py")
+    
+    parser = create_standard_parser(
+        description='Create YouTube playlists from enriched JSON data',
+        epilog=epilog
     )
     
-    parser.add_argument('-i', '--input', type=str,
-                        help='Input enriched JSON file path')
+    # Add common arguments (input, quiet, debug)
+    add_common_arguments(parser, script_type="input")
     
+    # Add script-specific arguments
     parser.add_argument('-t', '--title', type=str,
                         help='YouTube playlist title')
     
@@ -198,31 +203,56 @@ def run_interactive_mode():
     print(f" Playlist created: https://www.youtube.com/playlist?list={playlist_id}")
 
     # Push videos
-    print(f"\n{debug('')} Adding videos to playlist...\n")
+    logger.info("Adding videos to playlist...")
+    print(f"\nAdding videos to playlist...\n")
     push_count = 0
     for i, video_id in enumerate(video_ids, 1):
-        print(f"{debug(f'PUSH {i}/{len(video_ids)}')} Adding video: https://www.youtube.com/watch?v={video_id}")
+        logger.debug(f"PUSH {i}/{len(video_ids)} Adding video: https://www.youtube.com/watch?v={video_id}")
+        print(f"[{i}/{len(video_ids)}] Adding video: https://www.youtube.com/watch?v={video_id}")
         add_video_to_playlist(yt, playlist_id, video_id)
         push_count += 1
 
     print(f"\n Done! {push_count} videos added.")
-    print(f"{debug('Total YouTube API queries: ' + str(1 + push_count))}")  # 1 for create + N adds
+    logger.debug(f"Total YouTube API queries: {1 + push_count}")  # 1 for create + N adds
 
 def main():
+    global logger
     args = parse_arguments()
     
-    # Check if CLI arguments were provided
-    if args.input and args.title:
-        # CLI mode
-        success = run_cli_mode(args)
-        sys.exit(0 if success else 1)
-    else:
-        # Interactive mode (if missing required args for CLI)
-        if args.input or args.title:
-            print("ERROR: For CLI mode, both --input and --title are required")
-            print("Run without arguments for interactive mode")
-            sys.exit(1)
-        run_interactive_mode()
+    # Initialize logger with configurable debug level
+    from utils.logging import setup_logging, LoggerAdapter
+    log_level = "DEBUG" if args.debug else "INFO"
+    setup_logging("yt_push", level=log_level, quiet=args.quiet)
+    logger = LoggerAdapter("yt_push")
+    
+    logger.info("YouTube Playlist Creator started")
+    logger.debug(f"Arguments: {vars(args)}")
+    
+    try:
+        # Check if CLI arguments were provided
+        if args.input and args.title:
+            # CLI mode
+            logger.info("Running in CLI mode")
+            success = run_cli_mode(args)
+            logger.info(f"CLI mode completed: {'success' if success else 'failure'}")
+            sys.exit(0 if success else 1)
+        else:
+            # Interactive mode (if missing required args for CLI)
+            if args.input or args.title:
+                logger.error("For CLI mode, both --input and --title are required")
+                print("ERROR: For CLI mode, both --input and --title are required")
+                print("Run without arguments for interactive mode")
+                sys.exit(1)
+            
+            # Interactive mode
+            logger.info("Running in interactive mode")
+            run_interactive_mode()
+    except KeyboardInterrupt:
+        logger.info("Application interrupted by user")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

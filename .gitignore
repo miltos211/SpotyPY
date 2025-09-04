@@ -50,12 +50,17 @@ Thumbs.db
 # Project-specific files and directories
 claude.md
 logs/
-old_scirpts/
-old_scripts/
 out/
 songs/
 trash/
 start.md
+example/
+old_scripts/
+.cache
+.claude/
+.debug/
+.python-version
+common-issues-and-solutions-in-yt-dlp
 
 # Development files
 todo.txt
@@ -79,6 +84,16 @@ browser.json
 *.log
 *.part
 *.ytdl
+
+# YouTube-dlp temporary files
+*.webm.part
+*.mp4.part
+*.f*-*.webm
+*.f*-*.mp4
+
+# Python token files (OAuth)
+token.pickle
+token.json
 
 # Audio files (in case they end up in project root)
 *.mp3

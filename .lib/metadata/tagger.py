@@ -3,6 +3,10 @@ import re
 from mutagen.easyid3 import EasyID3
 from mutagen.id3 import ID3
 from mutagen.mp3 import MP3
+from utils.logging import get_logger
+
+# Initialize logger for tagger module
+logger = get_logger('tagger')
 
 def clean_string(text, max_length=None):
     """Clean and validate string input"""
@@ -66,35 +70,74 @@ def tag_mp3(file_path, metadata):
         "spotify_url": str
     }
     """
+    logger.debug(f"=== TAG_MP3 ENTRY === File: {file_path}")
+    logger.debug(f"Input metadata keys: {list(metadata.keys()) if metadata else 'None'}")
     try:
         # Check if file exists and is valid
+        logger.debug(f"Checking file existence: {file_path}")
         if not os.path.exists(file_path):
+            logger.error(f"File does not exist: {file_path}")
             return { "status": 400, "error": "File does not exist" }
         
-        if os.path.getsize(file_path) == 0:
+        file_size = os.path.getsize(file_path)
+        logger.debug(f"File exists, size: {file_size} bytes")
+        if file_size == 0:
+            logger.error(f"File is empty: {file_path}")
             return { "status": 400, "error": "File is empty" }
 
         # Load audio file
-        audio = MP3(file_path, ID3=ID3)
+        logger.debug(f"Loading MP3 file with mutagen")
+        try:
+            audio = MP3(file_path, ID3=ID3)
+            logger.debug(f"Successfully loaded MP3 file")
+        except Exception as e:
+            logger.error(f"Failed to load MP3 file: {e}")
+            return { "status": 400, "error": f"Failed to load MP3: {e}" }
 
         # Remove existing tags completely (overwrite)
-        audio.delete()
-        audio.save()
+        logger.debug(f"Deleting existing tags")
+        try:
+            audio.delete()
+            audio.save()
+            logger.debug(f"Successfully deleted existing tags")
+        except Exception as e:
+            logger.error(f"Failed to delete existing tags: {e}")
+            return { "status": 400, "error": f"Failed to delete tags: {e}" }
 
         # Now re-tag from scratch
-        audio_tags = EasyID3()
+        logger.debug(f"Creating new EasyID3 tag object")
+        try:
+            audio_tags = EasyID3()
+            logger.debug(f"Successfully created EasyID3 object")
+        except Exception as e:
+            logger.error(f"Failed to create EasyID3 object: {e}")
+            return { "status": 400, "error": f"Failed to create tags: {e}" }
         
         # Handle title - ensure it's not empty and reasonable
-        title = clean_string(metadata.get("title", ""), max_length=200)
+        logger.debug(f"Processing title field")
+        raw_title = metadata.get("title", "")
+        logger.debug(f"Raw title from metadata: '{raw_title}'")
+        title = clean_string(raw_title, max_length=200)
+        logger.debug(f"Cleaned title: '{title}'")
+        
         if not title:
             # Fallback to filename
             filename = os.path.basename(file_path)
+            logger.debug(f"Title empty, using filename fallback: '{filename}'")
             title = extract_title_from_filename(filename)
+            logger.debug(f"Extracted title from filename: '{title}'")
         
         if not title:
             title = "Unknown Title"
+            logger.debug(f"Using default title: '{title}'")
         
-        audio_tags["title"] = title
+        logger.debug(f"Final title to be set: '{title}'")
+        try:
+            audio_tags["title"] = title
+            logger.debug(f"Successfully set title tag")
+        except Exception as e:
+            logger.error(f"Failed to set title tag: {e}")
+            return { "status": 400, "error": f"Failed to set title: {e}" }
         
         # Handle artists - support multiple artists and ensure not empty
         artists = metadata.get("artists", [])
@@ -205,15 +248,33 @@ def tag_mp3(file_path, metadata):
                 audio_tags["website"] = spotify_url
 
         # Save to file
-        audio_tags.save(file_path)
+        logger.debug(f"Saving all tags to file: {file_path}")
+        logger.debug(f"Tags to be saved: {dict(audio_tags)}")
+        try:
+            audio_tags.save(file_path)
+            logger.debug(f"Successfully saved tags to file")
+        except Exception as e:
+            logger.error(f"Failed to save tags to file: {e}")
+            return { "status": 400, "error": f"Failed to save tags: {e}" }
         
         # Verify the file still exists and has content after tagging
-        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+        logger.debug(f"Verifying file after tagging")
+        if not os.path.exists(file_path):
+            logger.error(f"File disappeared after tagging: {file_path}")
+            return { "status": 400, "error": "File disappeared during tagging" }
+        
+        final_size = os.path.getsize(file_path)
+        logger.debug(f"Final file size after tagging: {final_size} bytes")
+        if final_size == 0:
+            logger.error(f"File corrupted (0 bytes) after tagging: {file_path}")
             return { "status": 400, "error": "File corrupted during tagging" }
         
+        logger.debug(f"=== TAG_MP3 SUCCESS === File: {file_path}")
         return { "status": 200 }
 
     except Exception as e:
+        logger.error(f"=== TAG_MP3 EXCEPTION === File: {file_path}, Error: {str(e)}")
+        logger.debug(f"Exception traceback:", exc_info=True)
         return { "status": 400, "error": f"Tagging failed: {str(e)}" }
 
 def clean_youtube_title(title):
@@ -250,15 +311,28 @@ def tag_from_enriched(enriched_entry, file_path):
     Extracts metadata from enriched JSON entry and applies it to the audio file.
     Returns { status, error? }
     """
+    logger.debug(f"=== TAG_FROM_ENRICHED ENTRY === File: {file_path}")
+    logger.debug(f"Enriched entry keys: {list(enriched_entry.keys()) if enriched_entry else 'None'}")
     try:
         spotify = enriched_entry.get("spotify", {})
+        logger.debug(f"Spotify section keys: {list(spotify.keys()) if spotify else 'None'}")
+        
+        youtube = enriched_entry.get("youtube", {})
+        logger.debug(f"YouTube section keys: {list(youtube.keys()) if youtube else 'None'}")
         
         # Prioritize Spotify data - it's usually the most reliable
+        logger.debug(f"Building metadata object from enriched entry")
         meta = {}
         
         # Title - prefer Spotify name
-        if spotify.get("name"):
-            meta["title"] = clean_string(spotify["name"])
+        spotify_name = spotify.get("name")
+        logger.debug(f"Spotify name: '{spotify_name}'")
+        if spotify_name:
+            cleaned_name = clean_string(spotify_name)
+            logger.debug(f"Cleaned Spotify name: '{cleaned_name}'")
+            meta["title"] = cleaned_name
+        else:
+            logger.debug(f"No Spotify name found")
         
         # Artists - prefer Spotify artists
         if spotify.get("artists") and isinstance(spotify["artists"], list):
@@ -326,7 +400,14 @@ def tag_from_enriched(enriched_entry, file_path):
         if not meta.get("title"):
             meta["title"] = "Unknown Title"
         
-        return tag_mp3(file_path, meta)
+        logger.debug(f"Final metadata object: {meta}")
+        logger.debug(f"Calling tag_mp3 with metadata")
+        result = tag_mp3(file_path, meta)
+        logger.debug(f"tag_mp3 result: {result}")
+        logger.debug(f"=== TAG_FROM_ENRICHED EXIT === Status: {result.get('status', 'unknown')}")
+        return result
 
     except Exception as e:
+        logger.error(f"=== TAG_FROM_ENRICHED EXCEPTION === File: {file_path}, Error: {str(e)}")
+        logger.debug(f"Exception traceback:", exc_info=True)
         return { "status": 400, "error": f"Metadata extract error: {str(e)}" }

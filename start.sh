@@ -1,9 +1,17 @@
 #!/bin/bash
 
 # SpotifyToYT Pipeline Script
-# Usage: ./start.sh [playlist_name_or_url]
+# Usage: ./start.sh [playlist_name_or_url] [--debug]
 
 set -e  # Exit on any error
+
+# Check for debug flag
+DEBUG_MODE=false
+if [[ "$*" == *"--debug"* ]]; then
+    DEBUG_MODE=true
+    # Remove --debug from arguments
+    set -- "${@/--debug}"
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -33,6 +41,15 @@ print_warning() {
 # Function to clean filename for file system
 clean_filename() {
     echo "$1" | sed 's/[<>:"/\\|?*]/_/g' | sed 's/ /_/g' | sed 's/__*/_/g' | sed 's/_$//' | sed 's/^_//'
+}
+
+# Function to get logging flags based on debug mode
+get_log_flags() {
+    if [[ "$DEBUG_MODE" == true ]]; then
+        echo "--debug"
+    else
+        echo "--quiet"
+    fi
 }
 
 # Check if Python environment is available
@@ -65,15 +82,17 @@ export_spotify_playlist() {
     
     local json_file="out/${playlist_name}.json"
     
+    local log_flags=$(get_log_flags)
+    
     if [[ "$playlist_input" == http* ]]; then
         # URL provided
-        python spoty_exporter_MK1.py --playlist-url "$playlist_input" -o "$json_file"
+        python spoty_exporter_MK1.py --playlist-url "$playlist_input" -o "$json_file" $log_flags
     elif [[ "$playlist_input" =~ ^[0-9]+$ ]]; then
         # Number provided (playlist index)
-        python spoty_exporter_MK1.py -p "$playlist_input" -o "$json_file"
+        python spoty_exporter_MK1.py -p "$playlist_input" -o "$json_file" $log_flags
     else
         # Playlist name provided
-        python spoty_exporter_MK1.py -p "$playlist_input" -o "$json_file"
+        python spoty_exporter_MK1.py -p "$playlist_input" -o "$json_file" $log_flags
     fi
     
     if [[ $? -eq 0 && -f "$json_file" ]]; then
@@ -94,7 +113,8 @@ search_youtube_matches() {
     local output_file="out/${playlist_name}-enriched.json"
     
     # Use threading for faster processing
-    python yt_searchtMK1.py -i "$input_file" -o "$output_file" -t 3 -q
+    local log_flags=$(get_log_flags)
+    python yt_searchtMK1.py -i "$input_file" -o "$output_file" -t 3 $log_flags
     
     if [[ $? -eq 0 && -f "$output_file" ]]; then
         print_success "YouTube matches found and saved to $output_file"
@@ -117,7 +137,8 @@ download_audio_files() {
     mkdir -p "$output_dir"
     
     # Use threading for faster downloads
-    python yt_FetchMK1.py -i "$input_file" -o "$output_dir" -t 3 -q
+    local log_flags=$(get_log_flags)
+    python yt_FetchMK1.py -i "$input_file" -o "$output_dir" -t 3 $log_flags
     
     if [[ $? -eq 0 ]]; then
         print_success "Audio files downloaded to $output_dir"
@@ -137,7 +158,8 @@ create_youtube_playlist() {
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         local input_file="$ENRICHED_JSON"
-        python yt_PushMK1.py -i "$input_file" -t "$playlist_name" -p "private"
+        local log_flags=$(get_log_flags)
+        python yt_PushMK1.py -i "$input_file" -t "$playlist_name" -p "private" $log_flags
         
         if [[ $? -eq 0 ]]; then
             print_success "YouTube playlist created successfully"
@@ -154,17 +176,21 @@ main() {
     echo -e "${BLUE}"
     echo "=========================================="
     echo "    SpotifyToYT Pipeline Script"
+    if [[ "$DEBUG_MODE" == true ]]; then
+        echo "         DEBUG MODE ENABLED"
+    fi
     echo "=========================================="
     echo -e "${NC}"
     
     # Check if playlist argument provided
     if [[ $# -eq 0 ]]; then
-        echo "Usage: $0 [playlist_name_or_url_or_index]"
+        echo "Usage: $0 [playlist_name_or_url_or_index] [--debug]"
         echo ""
         echo "Examples:"
-        echo "  $0 \"My Awesome Playlist\""
-        echo "  $0 \"https://open.spotify.com/playlist/...\""
-        echo "  $0 1"
+        echo "  $0 \"My Awesome Playlist\"                   # Normal operation (INFO level)"
+        echo "  $0 \"My Awesome Playlist\" --debug           # Debug mode (detailed logging)"
+        echo "  $0 \"https://open.spotify.com/playlist/...\"  # From Spotify URL"
+        echo "  $0 1 --debug                                # By playlist index with debug"
         echo ""
         echo "Or run without arguments to list playlists first:"
         python spoty_exporter_MK1.py -l
@@ -214,9 +240,9 @@ main() {
     echo "=========================================="
     echo -e "${NC}"
     echo "Files created:"
-    echo "  📄 Spotify JSON: $SPOTIFY_JSON"
-    echo "  📄 Enriched JSON: $ENRICHED_JSON"
-    echo "  🎵 Songs folder: $SONGS_DIR"
+    echo "  Spotify JSON: $SPOTIFY_JSON"
+    echo "  Enriched JSON: $ENRICHED_JSON"
+    echo "  Songs folder: $SONGS_DIR"
     echo ""
     echo "Total songs downloaded: $(find "$SONGS_DIR" -name "*.mp3" | wc -l)"
     echo ""

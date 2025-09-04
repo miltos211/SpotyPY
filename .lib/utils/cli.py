@@ -28,6 +28,10 @@ def add_common_arguments(parser: argparse.ArgumentParser, script_type: str = "ge
     parser.add_argument('-q', '--quiet', action='store_true',
                         help='Suppress verbose output')
     
+    # Debug flag for all scripts
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable detailed debug logging (default: INFO level)')
+    
     # Threading support for applicable scripts
     if script_type in ["threaded", "io"]:
         parser.add_argument('-t', '--threads', type=int, default=0,

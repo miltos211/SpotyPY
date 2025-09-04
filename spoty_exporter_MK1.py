@@ -13,8 +13,7 @@ from spotify.playlists import get_user_playlists
 from spotify.playlist_tracks import get_tracks_from_playlist
 from spotify.utils import extract_playlist_id
 
-# Import logging utilities
-from utils.logging import create_logger
+# Import logging utilities will be imported in main() for configurable levels
 
 # Import path utilities
 from utils.paths import PathValidator, validate_output_file
@@ -74,6 +73,12 @@ def parse_arguments():
     
     parser.add_argument('--playlist-id', type=str,
                         help='Direct Spotify playlist ID')
+    
+    # Add debug and quiet flags for consistent logging control
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable detailed debug logging (default: INFO level)')
+    parser.add_argument('-q', '--quiet', action='store_true',
+                        help='Suppress verbose output')
     
     return parser.parse_args()
 
@@ -226,9 +231,11 @@ def main():
     global logger
     args = parse_arguments()
     
-    # Initialize logger based on CLI arguments
-    quiet = hasattr(args, 'quiet') and args.quiet  # Add quiet support if needed
-    logger = create_logger("spoty_exporter", quiet=quiet)
+    # Initialize logger with configurable debug level
+    from utils.logging import setup_logging, LoggerAdapter
+    log_level = "DEBUG" if args.debug else "INFO"
+    setup_logging("spoty_exporter", level=log_level, quiet=args.quiet)
+    logger = LoggerAdapter("spoty_exporter")
     
     logger.debug("Application started")
     logger.debug(f"Arguments: {vars(args)}")

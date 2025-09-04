@@ -20,7 +20,7 @@ except ImportError:
     sys.exit(1)
 
 # Import logging utilities
-from utils.logging import create_logger, thread_safe_print
+from utils.logging import thread_safe_print  # setup_logging and LoggerAdapter imported in main()
 
 # Import path utilities
 from utils.paths import PathValidator, validate_input_file, validate_output_file
@@ -391,7 +391,7 @@ def parse_arguments():
         epilog=epilog
     )
     
-    # Add common arguments (input, output, threads, quiet)
+    # Add common arguments (input, output, threads, quiet, debug)
     add_common_arguments(parser, script_type="io")
     
     return parser.parse_args()
@@ -561,8 +561,11 @@ def main():
     global logger
     args = parse_arguments()
     
-    # Initialize logger
-    logger = create_logger("yt_search", quiet=args.quiet if hasattr(args, 'quiet') else False)
+    # Initialize logger with configurable debug level
+    from utils.logging import setup_logging, LoggerAdapter
+    log_level = "DEBUG" if args.debug else "INFO"
+    setup_logging("yt_search", level=log_level, quiet=args.quiet)
+    logger = LoggerAdapter("yt_search")
     
     logger.info("YouTube Music Search & Enrichment started")
     logger.debug(f"Arguments: {vars(args)}")
