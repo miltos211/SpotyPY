@@ -35,6 +35,12 @@ A comprehensive Python application that transfers Spotify playlists to YouTube M
 - **Smart retry logic** - failed tracks intelligently retried with context-aware delays
 - **Backward compatibility** - all existing JSON files continue working
 
+**Resume & Recovery System** 🔄
+- **Perfect resume capability** - automatically detects missing/corrupted files
+- **Smart synchronization** - updates JSON state to match actual downloaded files
+- **One-command resume** - `.debug/resume_download.sh` for complete automation
+- **Safe operation** - automatic backups and dry-run modes for testing
+
 ## 🚀 Quick Start
 
 ### Automated Pipeline (Recommended)
@@ -346,8 +352,29 @@ project/
 ```
 
 ### 4. Utility Tools
-The project includes utility scripts for advanced users:
+The project includes several utility scripts for advanced users:
 
+#### **Resume & Recovery System**
+```bash
+# Interactive JSON-MP3 sync with dry-run mode
+python .debug/json_sync.py
+
+# Batch sync for automation (with exit codes)
+python .debug/json_sync_batch.py out/enriched.json songs/ [--dry-run]
+
+# Complete automated resume: sync + download + verify
+.debug/resume_download.sh out/enriched.json songs/ [threads]
+```
+
+**Resume System Features:**
+- **🔍 Smart Detection** - Scans songs directory and compares with JSON state
+- **🔧 State Synchronization** - Updates JSON to reflect actual file status  
+- **💾 Safe Operation** - Creates automatic backups before modifications
+- **🛡️ Corruption Detection** - Identifies and marks corrupted files for re-download
+- **🎯 Perfect Resume** - Downloads only missing/corrupted tracks
+- **📊 Detailed Reports** - Shows exactly what needs to be downloaded
+
+#### **URL Extraction Tool**
 ```bash
 # Extract YouTube URLs from enriched JSON (for external tools)
 python .debug/json_cleaner.py
@@ -357,6 +384,18 @@ This utility converts enriched JSON files to plain text lists of YouTube URLs, u
 - External downloaders or tools
 - Batch processing with other applications
 - Manual verification of matched videos
+
+#### **Common Use Cases**
+```bash
+# Resume interrupted download
+.debug/resume_download.sh out/playlist_enriched.json songs/ 3
+
+# Check what's missing without downloading
+python .debug/json_sync_batch.py out/enriched.json songs/ --dry-run
+
+# Fix JSON after manually moving/deleting files
+python .debug/json_sync.py  # Interactive mode with prompts
+```
 
 ## 🐛 Troubleshooting
 
@@ -388,6 +427,12 @@ This utility converts enriched JSON files to plain text lists of YouTube URLs, u
 - **Persistent state tracking** - Download attempts and failures tracked in JSON
 - **Context-aware delays** - Bot detection delays adapt to thread count and failure patterns
 - **Intelligent retry** - Failed tracks retried with smart delays to avoid repeated blocking
+
+**Resume Interrupted Downloads**:
+- **Automatic detection** - Resume utilities detect missing/corrupted files
+- **Perfect synchronization** - JSON state updated to match actual files
+- **One-command resume** - `.debug/resume_download.sh` handles everything automatically
+- Use resume utilities when downloads are interrupted or files are accidentally deleted
 
 **Liked songs authentication issues**:
 - Re-authentication automatically triggered when scope changes
