@@ -45,20 +45,20 @@ THREADS="${3:-3}"  # Default to 3 threads
 
 # Validate inputs
 if [ ! -f "$ENRICHED_JSON" ]; then
-    print_color $RED "❌ JSON file not found: $ENRICHED_JSON"
+    print_color $RED "JSON file not found: $ENRICHED_JSON"
     exit 1
 fi
 
 if [ ! -d "$SONGS_DIR" ]; then
-    print_color $RED "❌ Songs directory not found: $SONGS_DIR"
+    print_color $RED "Songs directory not found: $SONGS_DIR"
     exit 1
 fi
 
-print_color $BLUE "🚀 SpotifyToYT Resume Download Helper"
+print_color $BLUE "SpotifyToYT Resume Download Helper"
 echo "=" "$(printf '%*s' 40 '' | tr ' ' '=')"
-print_color $BLUE "📁 JSON: $ENRICHED_JSON"
-print_color $BLUE "📁 Songs: $SONGS_DIR" 
-print_color $BLUE "🧵 Threads: $THREADS"
+print_color $BLUE "JSON: $ENRICHED_JSON"
+print_color $BLUE "Songs: $SONGS_DIR" 
+print_color $BLUE "Threads: $THREADS"
 echo ""
 
 # Step 1: Sync JSON with existing files
@@ -67,10 +67,10 @@ python .debug/json_sync_batch.py "$ENRICHED_JSON" "$SONGS_DIR"
 sync_result=$?
 
 if [ $sync_result -eq 2 ]; then
-    print_color $RED "❌ Sync failed with error"
+    print_color $RED "Sync failed with error"
     exit 1
 elif [ $sync_result -eq 0 ]; then
-    print_color $GREEN "✨ All tracks already downloaded - nothing to resume!"
+    print_color $GREEN "All tracks already downloaded - nothing to resume!"
     exit 0
 fi
 
@@ -88,18 +88,18 @@ final_result=$?
 
 # Summary
 echo ""
-print_color $BLUE "📊 RESUME SUMMARY"
+print_color $BLUE "RESUME SUMMARY"
 echo "=" "$(printf '%*s' 40 '' | tr ' ' '=')"
 
 if [ $final_result -eq 0 ]; then
-    print_color $GREEN "🎉 Resume completed successfully! All tracks downloaded."
+    print_color $GREEN "Resume completed successfully! All tracks downloaded."
 elif [ $final_result -eq 1 ]; then
-    print_color $YELLOW "⚠️  Some tracks still missing. You may need to:"
+    print_color $YELLOW "Some tracks still missing. You may need to:"
     echo "   - Check logs for specific errors"
     echo "   - Run the resume script again"
     echo "   - Try with fewer threads if bot detection is active"
 else
-    print_color $RED "❌ Verification failed"
+    print_color $RED "Verification failed"
 fi
 
 exit $final_result

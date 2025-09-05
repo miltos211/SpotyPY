@@ -36,17 +36,17 @@ def main():
     
     # Validate inputs
     if not os.path.exists(json_path):
-        print(f"❌ JSON file not found: {json_path}")
+        print(f"JSON file not found: {json_path}")
         sys.exit(1)
     
     if not os.path.exists(songs_dir):
-        print(f"❌ Songs directory not found: {songs_dir}")
+        print(f"Songs directory not found: {songs_dir}")
         sys.exit(1)
     
-    print(f"🔄 SpotifyToYT JSON-MP3 Sync (Batch Mode)")
-    print(f"📁 JSON: {json_path}")
-    print(f"📁 Songs: {songs_dir}")
-    print(f"🧪 Mode: {'DRY RUN' if dry_run else 'LIVE'}")
+    print(f"SpotifyToYT JSON-MP3 Sync (Batch Mode)")
+    print(f"JSON: {json_path}")
+    print(f"Songs: {songs_dir}")
+    print(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
     print("=" * 50)
     
     try:
@@ -63,7 +63,7 @@ def main():
             sys.exit(0)  # All good
             
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         sys.exit(2)  # Error occurred
 
 if __name__ == "__main__":
