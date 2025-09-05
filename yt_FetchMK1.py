@@ -18,7 +18,7 @@ from metadata.tagger import tag_from_enriched
 from metadata.artwork import embed_art_from_enriched
 
 # Import logging utilities
-from utils.logging import create_logger, thread_safe_print
+from utils.logging import create_logger
 
 # Import path utilities
 from utils.paths import PathValidator, validate_input_file, validate_directory
@@ -225,7 +225,7 @@ def download_song_worker(song_data):
     # Check if this is a problem song that should be skipped
     if should_skip_problem_song(download_state):
         update_download_state(entry, 'skipped', error="High failure rate - automatic skip")
-        thread_safe_print(f"[{index}/{total}] Skipped: Problem song ({download_state['failure_count']}/{download_state['attempt_count']} failures)")
+        logger.info(f"[{index}/{total}] Skipped: Problem song ({download_state['failure_count']}/{download_state['attempt_count']} failures)")
         return "skipped"
     
     # Extract song info (already done above for early logging)
@@ -238,14 +238,14 @@ def download_song_worker(song_data):
     if not youtube or not youtube.get("id") or not youtube["id"].get("videoId"):
         logger.error(f"=== MISSING VIDEO ID === Song #{index} '{song_display}' | Thread: {thread_name} | No YouTube metadata")
         logger.warning(f"Missing YouTube data for song {index}")
-        thread_safe_print(f"[{index}/{total}] Skipped: Missing YouTube metadata - {spotify_name}")
+        logger.info(f"[{index}/{total}] Skipped: Missing YouTube metadata - {spotify_name}")
         return "skipped"
 
     video_id = youtube["id"]["videoId"]
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     
     logger.debug(f"=== DOWNLOAD START === Song #{index} '{song_display}' | Thread: {thread_name} | URL: {video_url}")
-    thread_safe_print(f"[{index}/{total}] Downloading: {spotify_name} by {', '.join(spotify_artists)}")
+    logger.info(f"[{index}/{total}] Downloading: {spotify_name} by {', '.join(spotify_artists)}")
     logger.debug(f"Video URL: {video_url}")
 
     # Get batch context for smart delay calculation  
@@ -273,7 +273,7 @@ def download_song_worker(song_data):
     # If primary download failed with YouTube blocking, try lyrics video fallback
     if download_result["status"] == 500:  # YouTube blocking detected
         logger.debug("Trying lyrics video fallback")
-        thread_safe_print(f"[{index}/{total}] Searching for lyrics video fallback...")
+        logger.info(f"[{index}/{total}] Searching for lyrics video fallback...")
         
         lyrics_video_id = find_lyrics_video(
             song_name=spotify_name,
@@ -284,7 +284,7 @@ def download_song_worker(song_data):
         if lyrics_video_id:
             lyrics_url = f"https://www.youtube.com/watch?v={lyrics_video_id}"
             logger.debug(f"Found lyrics video: {lyrics_url}")
-            thread_safe_print(f"[{index}/{total}] Trying lyrics video...")
+            logger.info(f"[{index}/{total}] Trying lyrics video...")
             
             lyrics_result = run_yt_dlp_with_context(
                 video_url=lyrics_url,
@@ -301,7 +301,7 @@ def download_song_worker(song_data):
             
             if lyrics_result["status"] == 200:
                 logger.debug("Lyrics video download successful")
-                thread_safe_print(f"[{index}/{total}] Lyrics video download successful!")
+                logger.info(f"[{index}/{total}] Lyrics video download successful!")
                 download_result = lyrics_result
             else:
                 logger.warning("Lyrics video also failed")
@@ -323,7 +323,7 @@ def download_song_worker(song_data):
             shared_context['batch_failures'] = shared_context.get('batch_failures', 0) + 1
             shared_context['batch_attempts'] = shared_context.get('batch_attempts', 0) + 1
         
-        thread_safe_print(f"[{index}/{total}] Failed: Bot detected (delay: {delay_applied:.1f}s)")
+        logger.warning(f"[{index}/{total}] Failed: Bot detected (delay: {delay_applied:.1f}s)")
         return "failed"
     else:
         # Other failure case
@@ -332,13 +332,13 @@ def download_song_worker(song_data):
             shared_context['batch_failures'] = shared_context.get('batch_failures', 0) + 1
             shared_context['batch_attempts'] = shared_context.get('batch_attempts', 0) + 1
             
-        thread_safe_print(f"[{index}/{total}] Failed: {download_result.get('error', 'Unknown error')}")
+        logger.warning(f"[{index}/{total}] Failed: {download_result.get('error', 'Unknown error')}")
         return "failed"
 
     file_path = download_result["path"]
     if not os.path.isfile(file_path):
         update_download_state(entry, 'failed', error="Downloaded file not found")
-        thread_safe_print(f"[{index}/{total}] Failed: Downloaded file not found")
+        logger.error(f"[{index}/{total}] Failed: Downloaded file not found")
         return "failed"
 
     file_size = os.path.getsize(file_path)
@@ -353,7 +353,7 @@ def download_song_worker(song_data):
     
     logger.debug(f"=== DOWNLOAD SUCCESS === Song #{index} '{song_display}' | Thread: {thread_name} | File: {os.path.basename(file_path)} | Size: {file_size} bytes")
     logger.debug(f"Download complete: {file_path} ({file_size} bytes)")
-    thread_safe_print(f"[{index}/{total}] Download complete: {os.path.basename(file_path)} (by {', '.join(spotify_artists)})")
+    logger.info(f"[{index}/{total}] Download complete: {os.path.basename(file_path)} (by {', '.join(spotify_artists)})")
     
     logger.debug(f"=== DOWNLOAD WORKER END === Song #{index} '{song_display}' | Thread: {thread_name} | Returning success")
     return {"status": "downloaded", "file_path": file_path, "entry": entry, "song_index": index, "song_name": song_display}
@@ -483,7 +483,7 @@ def process_songs_threaded(entries, output_dir, max_workers=3, json_path=None):
     song_data_list = [(i+1, entry, total, output_dir, shared_context) for i, entry in enumerate(entries)]
     logger.debug(f"=== PREPARED SONG DATA === {len(song_data_list)} song data tuples created with shared context")
     
-    thread_safe_print(f"\nProcessing {total} songs with {max_workers} concurrent download threads...\n")
+    logger.info(f"Processing {total} songs with {max_workers} concurrent download threads...")
     
     # Phase 1: Threaded downloads
     logger.debug(f"=== THREAD POOL START === Creating ThreadPoolExecutor with {max_workers} workers | PID: {os.getpid()}")
@@ -519,21 +519,21 @@ def process_songs_threaded(entries, output_dir, max_workers=3, json_path=None):
                 if isinstance(download_result, dict) and download_result["status"] == "downloaded":
                     downloaded_files.append((song_index, download_result["file_path"], download_result["entry"]))
                     logger.debug(f"=== DOWNLOAD SUCCESS === Song #{song_index}: '{song_name}' | File: {os.path.basename(download_result['file_path'])}")
-                    thread_safe_print(f"✓ [{song_index}/{total}] Downloaded: {os.path.basename(download_result['file_path'])}")
+                    logger.info(f"✓ [{song_index}/{total}] Downloaded: {os.path.basename(download_result['file_path'])}")
                 elif download_result == "skipped":
                     results["skipped"] += 1
                     logger.debug(f"=== DOWNLOAD SKIPPED === Song #{song_index}: '{song_name}'")
-                    thread_safe_print(f"⚠ [{song_index}/{total}] Skipped")
+                    logger.info(f"⚠ [{song_index}/{total}] Skipped")
                 else:
                     results["failed"] += 1
                     logger.debug(f"=== DOWNLOAD FAILED === Song #{song_index}: '{song_name}' | Result: {download_result}")
-                    thread_safe_print(f"✗ [{song_index}/{total}] Download failed")
+                    logger.warning(f"✗ [{song_index}/{total}] Download failed")
                     
             except Exception as e:
                 results["failed"] += 1
                 logger.error(f"=== FUTURE EXCEPTION === Song #{song_index}: '{song_name}' | Error: {e}")
                 logger.debug(f"Exception details:", exc_info=True)
-                thread_safe_print(f"✗ [{song_index}/{total}] Download exception: {str(e)}")
+                logger.error(f"✗ [{song_index}/{total}] Download exception: {str(e)}")
     
     logger.debug(f"=== THREAD POOL END === All download tasks completed | Downloaded: {len(downloaded_files)}, Failed: {results['failed']}, Skipped: {results['skipped']}")
     
@@ -548,7 +548,7 @@ def process_songs_threaded(entries, output_dir, max_workers=3, json_path=None):
     # Phase 2: Sequential metadata and artwork processing
     if downloaded_files:
         logger.debug(f"=== METADATA PHASE START === Processing {len(downloaded_files)} downloaded files sequentially")
-        thread_safe_print(f"\nProcessing metadata and artwork sequentially for {len(downloaded_files)} downloaded songs...\n")
+        logger.info(f"Processing metadata and artwork sequentially for {len(downloaded_files)} downloaded songs...")
         
         # CRITICAL FIX: Sort downloaded files by song_index to ensure correct metadata assignment
         # Previously files were processed in random completion order, causing metadata cross-contamination
@@ -559,23 +559,23 @@ def process_songs_threaded(entries, output_dir, max_workers=3, json_path=None):
             song_name = entry.get('spotify', {}).get('name', 'Unknown')
             logger.debug(f"=== METADATA TASK START === {metadata_task_num}/{len(downloaded_files)} | Song #{song_index}: '{song_name}' | File: {os.path.basename(file_path)}")
             try:
-                thread_safe_print(f"[{song_index}/{total}] Processing metadata: {os.path.basename(file_path)}")
+                logger.info(f"[{song_index}/{total}] Processing metadata: {os.path.basename(file_path)}")
                 metadata_result = process_metadata_worker(file_path, entry, f"sequential-{metadata_task_num}")
                 
                 if metadata_result == "success":
                     results["success"] += 1
                     logger.debug(f"=== METADATA SUCCESS === {metadata_task_num}/{len(downloaded_files)} | Song #{song_index}: '{song_name}'")
-                    thread_safe_print(f"✓ [{song_index}/{total}] Complete: {os.path.basename(file_path)}")
+                    logger.info(f"✓ [{song_index}/{total}] Complete: {os.path.basename(file_path)}")
                 else:
                     results["metadata_failed"] += 1
                     logger.debug(f"=== METADATA FAILED === {metadata_task_num}/{len(downloaded_files)} | Song #{song_index}: '{song_name}' | Result: {metadata_result}")
-                    thread_safe_print(f"⚠ [{song_index}/{total}] Downloaded but metadata failed")
+                    logger.warning(f"⚠ [{song_index}/{total}] Downloaded but metadata failed")
                     
             except Exception as e:
                 results["metadata_failed"] += 1
                 logger.error(f"=== METADATA EXCEPTION === {metadata_task_num}/{len(downloaded_files)} | Song #{song_index}: '{song_name}' | Error: {e}")
                 logger.debug(f"Exception details:", exc_info=True)
-                thread_safe_print(f"⚠ [{song_index}/{total}] Metadata exception: {str(e)}")
+                logger.error(f"⚠ [{song_index}/{total}] Metadata exception: {str(e)}")
     
     logger.debug(f"=== METADATA PHASE END === All metadata processing completed")
     
@@ -605,7 +605,7 @@ def process_songs_sequential(entries, output_dir):
     skipped = failed = 0
 
     logger.debug(f"Starting download phase for {total} tracks")
-    print(f"\nDownloading {total} tracks sequentially...\n")
+    logger.info(f"Downloading {total} tracks sequentially...")
     
     # Create basic shared context for sequential mode
     shared_context = {
@@ -628,12 +628,12 @@ def process_songs_sequential(entries, output_dir):
             failed += 1
 
     logger.debug(f"Download phase complete. Downloaded: {len(downloaded)}, Skipped: {skipped}, Failed: {failed}")
-    print(f"\nStarting metadata embedding...\n")
+    logger.info(f"Starting metadata embedding...")
 
     # Metadata phase
     done = 0
     for i, item in enumerate(downloaded, 1):
-        print(f"[{i}/{len(downloaded)}] Processing: {os.path.basename(item['file_path'])}")
+        logger.info(f"[{i}/{len(downloaded)}] Processing: {os.path.basename(item['file_path'])}")
         result = process_metadata_worker(item["file_path"], item["entry"], "main")
         
         if result == "success":

@@ -1,5 +1,11 @@
 from .search import search_youtube_track
 
+# Import proper logging system
+from utils.logging import get_logger
+
+# Initialize logger for this module
+logger = get_logger("enrich")
+
 def enrich_tracks_with_youtube(tracks, yt_client, verbose=False):
     """
     Given a list of Spotify tracks, return a list of dicts with full Spotify + YouTube info.
@@ -15,7 +21,7 @@ def enrich_tracks_with_youtube(tracks, yt_client, verbose=False):
 
     for i, track in enumerate(tracks, 1):
         if verbose:
-            print(f"[{i}/{total}] Searching: {track['name']} by {', '.join(track['artists'])}")
+            logger.info(f"[{i}/{total}] Searching: {track['name']} by {', '.join(track['artists'])}")
 
         youtube_url, search_query, response_data, matched_item = search_youtube_track(
             track,
@@ -32,6 +38,6 @@ def enrich_tracks_with_youtube(tracks, yt_client, verbose=False):
         })
 
     if verbose:
-        print(f"\n✅ Enrichment complete! Matched {matched}/{total} tracks.")
+        logger.info(f"\n✅ Enrichment complete! Matched {matched}/{total} tracks.")
 
     return enriched

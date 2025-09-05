@@ -8,6 +8,11 @@ requests>=2.31.0
 # GUI dependencies
 kivy>=2.3.0
 
+# YouTube API dependencies
+google-api-python-client>=2.0.0
+google-auth-oauthlib>=1.0.0
+
 # Utilities
 pathlib2>=2.3.7
 urllib3>=2.0.0
+python-dotenv>=1.0.0

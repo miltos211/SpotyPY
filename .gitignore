@@ -67,6 +67,7 @@ todo.txt
 notes.txt
 *.bak
 *.backup
+changes.md
 
 # Spotify credentials (if any)
 .env

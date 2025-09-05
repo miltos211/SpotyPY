@@ -7,6 +7,12 @@ import time
 from urllib.parse import urlparse
 import mimetypes
 
+# Import proper logging system
+from utils.logging import get_logger
+
+# Initialize logger for this module
+logger = get_logger("artwork")
+
 def detect_image_format(image_data):
     """Detect image format from binary data"""
     if image_data.startswith(b'\xff\xd8\xff'):
@@ -180,7 +186,7 @@ def try_multiple_sources(url_list, source_name=""):
             return result
         
         # Log the failure but continue trying
-        print(f"    {source_name} source {i+1} failed: {result.get('error', 'Unknown error')}")
+        logger.debug(f"{source_name} source {i+1} failed: {result.get('error', 'Unknown error')}")
     
     return { "status": 400, "error": f"All {source_name} sources failed" }
 
@@ -199,42 +205,42 @@ def embed_art_from_enriched(enriched_entry, file_path):
         track_name = spotify.get("name", "Unknown Track")
         artist_names = spotify.get("artists", ["Unknown Artist"])
         
-        print(f"    Fetching artwork for: {track_name} by {', '.join(artist_names)}")
+        logger.info(f"Fetching artwork for: {track_name} by {', '.join(artist_names)}")
         
         # Source 1: Try Spotify oEmbed (best quality, but often fails)
         spotify_success = False
         if spotify_url:
-            print(f"    Trying Spotify oEmbed...")
+            logger.debug("Trying Spotify oEmbed...")
             cover_result = fetch_spotify_cover_url(spotify_url)
             if cover_result["status"] == 200:
                 result = try_multiple_sources(cover_result["urls"], "Spotify")
                 if result["status"] == 200:
-                    print(f"    ✓ Spotify artwork downloaded ({result['size']} bytes)")
+                    logger.info(f"✓ Spotify artwork downloaded ({result['size']} bytes)")
                     embed_result = embed_cover_art(file_path, result["data"], result["mime_type"])
                     if embed_result["status"] == 200:
                         return embed_result
-                    print(f"    Spotify embed failed: {embed_result.get('error')}")
+                    logger.warning(f"Spotify embed failed: {embed_result.get('error')}")
                 else:
-                    print(f"    Spotify download failed: {result.get('error')}")
+                    logger.debug(f"Spotify download failed: {result.get('error')}")
             else:
-                print(f"    Spotify oEmbed failed: {cover_result.get('error')}")
+                logger.debug(f"Spotify oEmbed failed: {cover_result.get('error')}")
         
         # Source 2: Try YouTube thumbnails (fallback)
         if youtube:
-            print(f"    Trying YouTube thumbnails...")
+            logger.debug("Trying YouTube thumbnails...")
             youtube_urls = get_youtube_thumbnail_urls(youtube)
             if youtube_urls:
                 result = try_multiple_sources(youtube_urls, "YouTube")
                 if result["status"] == 200:
-                    print(f"    ✓ YouTube thumbnail downloaded ({result['size']} bytes)")
+                    logger.info(f"✓ YouTube thumbnail downloaded ({result['size']} bytes)")
                     embed_result = embed_cover_art(file_path, result["data"], result["mime_type"])
                     if embed_result["status"] == 200:
                         return embed_result
-                    print(f"    YouTube embed failed: {embed_result.get('error')}")
+                    logger.warning(f"YouTube embed failed: {embed_result.get('error')}")
                 else:
-                    print(f"    YouTube thumbnails failed: {result.get('error')}")
+                    logger.debug(f"YouTube thumbnails failed: {result.get('error')}")
             else:
-                print(f"    No YouTube thumbnail URLs found")
+                logger.debug("No YouTube thumbnail URLs found")
         
         # If we get here, all sources failed
         return { 

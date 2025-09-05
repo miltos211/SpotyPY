@@ -10,7 +10,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '.lib'))
 # Import from namespaced spotify modules
 from spotify.auth import get_authenticated_client
 from spotify.playlists import get_user_playlists
-from spotify.playlist_tracks import get_tracks_from_playlist
+from spotify.playlist_tracks import get_tracks_from_playlist, get_liked_songs, generate_liked_songs_path
 from spotify.utils import extract_playlist_id
 
 # Import logging utilities will be imported in main() for configurable levels
@@ -28,6 +28,7 @@ def print_menu():
     print("\n=== Spotify Playlist Exporter ===")
     print("1. Show all playlists")
     print("2. Export a playlist")
+    print("3. Export liked songs")
     print("0. Exit")
 
 def find_playlist(input_str, playlists):
@@ -74,6 +75,12 @@ def parse_arguments():
     parser.add_argument('--playlist-id', type=str,
                         help='Direct Spotify playlist ID')
     
+    parser.add_argument('--liked-songs', action='store_true',
+                        help='Export liked songs instead of playlist')
+    
+    parser.add_argument('--test-limit', type=int, 
+                        help='Limit number of tracks for testing (useful for liked songs)')
+    
     # Add debug and quiet flags for consistent logging control
     parser.add_argument('--debug', action='store_true',
                         help='Enable detailed debug logging (default: INFO level)')
@@ -105,10 +112,41 @@ def run_cli_mode(args):
     # List mode
     if args.list:
         logger.info(f"Listing {result['count']} playlists")
-        print(f"You have {result['count']} playlists:\n")
+        logger.info(f"You have {result['count']} playlists:\n")
         for i, pl in enumerate(playlists, 1):
-            print(f"{i}. {pl['name']} ({pl['tracks']} tracks)")
+            logger.info(f"{i}. {pl['name']} ({pl['tracks']} tracks)")
         return True
+    
+    # Liked songs mode
+    if args.liked_songs:
+        logger.info("Exporting liked songs")
+        
+        # Generate date-based path if no output specified
+        if not args.output:
+            folder_path, json_path = generate_liked_songs_path()
+            logger.info(f"Using auto-generated path: {json_path}")
+        else:
+            # Validate provided output path
+            is_valid, json_path, error = validate_output_file(args.output)
+            if not is_valid:
+                logger.error(f"Invalid output path: {error}")
+                return False
+            
+        logger.debug(f"Validated output path: {json_path}")
+        
+        # Export liked songs with optional test limit
+        result = get_liked_songs(sp, export_path=str(json_path), test_limit=args.test_limit)
+        
+        if result["status"] == 200:
+            track_count = len(result['tracks'])
+            if args.test_limit:
+                logger.success(f"Exported {track_count} liked songs (test limited) to {json_path}")
+            else:
+                logger.success(f"Exported {track_count} liked songs to {json_path}")
+            return True
+        else:
+            logger.error(f"Failed to export liked songs: {result['error']}")
+            return False
     
     # Export mode - need both playlist and output
     if not args.output:
@@ -164,7 +202,7 @@ def run_interactive_mode():
         sp = get_authenticated_client()
     except Exception as e:
         logger.error(f"Failed to authenticate with Spotify: {e}")
-        print("ERROR: Failed to authenticate with Spotify")
+        logger.error("ERROR: Failed to authenticate with Spotify")
         return
 
     while True:
@@ -177,18 +215,16 @@ def run_interactive_mode():
             result = get_user_playlists(sp)
             if result["status"] == 200:
                 logger.info(f"Retrieved {result['count']} playlists")
-                print(f"\n You have {result['count']} playlists:\n")
+                logger.info(f"\n You have {result['count']} playlists:\n")
                 for i, pl in enumerate(result["playlists"], 1):
-                    print(f"{i}. {pl['name']} ({pl['tracks']} tracks)")
+                    logger.info(f"{i}. {pl['name']} ({pl['tracks']} tracks)")
                 playlists = result["playlists"]
             else:
                 logger.error(f"Failed to fetch playlists: {result['error']}")
-                print(" Failed to fetch playlists:", result["error"])
 
         elif choice == "2":
             if 'playlists' not in locals():
-                logger.warning("User tried to export without fetching playlists first")
-                print(" Please run option 1 first to fetch your playlists.")
+                logger.warning(" Please run option 1 first to fetch your playlists.")
                 continue
 
             selection = input("Enter playlist name, URL, ID, or index: ").strip()
@@ -197,7 +233,6 @@ def run_interactive_mode():
 
             if not playlist_id:
                 logger.warning(f"Playlist not found: {selection}")
-                print(" Playlist not found.")
                 continue
 
             output_file = input("Enter path to export JSON file (e.g. `out/playlist.json`): ").strip()
@@ -206,7 +241,7 @@ def run_interactive_mode():
             is_valid, output_path, error = validate_output_file(output_file)
             if not is_valid:
                 logger.error(f"Invalid output path: {error}")
-                print(f" Error: {error}")
+                logger.error(f" Error: {error}")
                 continue
             
             logger.info(f"Exporting playlist {playlist_id} to {output_path}")
@@ -214,10 +249,40 @@ def run_interactive_mode():
 
             if result["status"] == 200:
                 logger.success(f"Exported {len(result['tracks'])} tracks to {output_path}")
-                print(f" Exported {len(result['tracks'])} tracks to {output_path}")
+                logger.info(f" Exported {len(result['tracks'])} tracks to {output_path}")
             else:
                 logger.error(f"Failed to export: {result['error']}")
-                print(" Failed to export:", result["error"])
+                logger.error(" Failed to export:", result["error"])
+
+        elif choice == "3":
+            logger.info("User chose to export liked songs")
+            
+            # Ask if user wants test limit
+            test_limit_input = input("Enter test limit (number of songs) or press Enter for all: ").strip()
+            test_limit = None
+            if test_limit_input.isdigit():
+                test_limit = int(test_limit_input)
+                logger.debug(f"User set test limit: {test_limit}")
+            
+            # Generate date-based path
+            folder_path, json_path = generate_liked_songs_path()
+            logger.info(f"Using auto-generated path: {json_path}")
+            logger.info(f" Exporting to: {json_path}")
+            
+            # Export liked songs
+            result = get_liked_songs(sp, export_path=str(json_path), test_limit=test_limit)
+            
+            if result["status"] == 200:
+                track_count = len(result['tracks'])
+                if test_limit:
+                    logger.success(f"Exported {track_count} liked songs (test limited) to {json_path}")
+                    logger.info(f" Exported {track_count} liked songs (test limited) to {json_path}")
+                else:
+                    logger.success(f"Exported {track_count} liked songs to {json_path}")
+                    logger.info(f" Exported {track_count} liked songs to {json_path}")
+            else:
+                logger.error(f"Failed to export liked songs: {result['error']}")
+                logger.error(" Failed to export liked songs:", result["error"])
 
         elif choice == "0":
             logger.info("User chose to exit")
@@ -242,7 +307,7 @@ def main():
     
     try:
         # Check if any CLI arguments were provided
-        if args.list or args.playlist or args.playlist_url or args.playlist_id or args.output:
+        if args.list or args.playlist or args.playlist_url or args.playlist_id or args.output or args.liked_songs:
             # CLI mode
             logger.info("Running in CLI mode")
             success = run_cli_mode(args)

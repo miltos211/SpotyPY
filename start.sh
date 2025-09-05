@@ -2,15 +2,43 @@
 
 # SpotifyToYT Pipeline Script
 # Usage: ./start.sh [playlist_name_or_url] [--debug]
+#    or: ./start.sh --liked-songs [--test-limit N] [--debug]
 
 set -e  # Exit on any error
 
-# Check for debug flag
+# Parse arguments - handle --debug and --liked-songs in any position
 DEBUG_MODE=false
-if [[ "$*" == *"--debug"* ]]; then
-    DEBUG_MODE=true
-    # Remove --debug from arguments
-    set -- "${@/--debug}"
+LIKED_SONGS_MODE=false
+TEST_LIMIT=""
+PLAYLIST_INPUT=""
+ARGS=()
+
+# Process all arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --debug)
+            DEBUG_MODE=true
+            shift
+            ;;
+        --liked-songs)
+            LIKED_SONGS_MODE=true
+            shift
+            ;;
+        --test-limit)
+            TEST_LIMIT="$2"
+            shift 2
+            ;;
+        *)
+            # Collect non-flag arguments (playlist name/URL/index)
+            ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Set playlist input from remaining arguments
+if [[ ${#ARGS[@]} -gt 0 ]]; then
+    PLAYLIST_INPUT="${ARGS[0]}"
 fi
 
 # Colors for output
@@ -73,7 +101,36 @@ setup_directories() {
     print_success "Directories created"
 }
 
-# Step 1: Export Spotify playlist
+# Step 1a: Export Spotify liked songs
+export_spotify_liked_songs() {
+    print_step "Step 1: Exporting Spotify liked songs..."
+    
+    # Generate date-based filename
+    local today=$(date +%d-%m-%y)
+    local liked_songs_dir="out/liked_songs_${today}"
+    local json_file="${liked_songs_dir}/liked_songs_${today}.json"
+    
+    local log_flags=$(get_log_flags)
+    
+    # Add test limit if specified
+    local test_limit_flag=""
+    if [[ -n "$TEST_LIMIT" ]]; then
+        test_limit_flag="--test-limit $TEST_LIMIT"
+        print_step "Using test limit: $TEST_LIMIT songs"
+    fi
+    
+    python spoty_exporter_MK1.py --liked-songs $test_limit_flag $log_flags
+    
+    if [[ $? -eq 0 && -f "$json_file" ]]; then
+        print_success "Spotify liked songs exported to $json_file"
+        export SPOTIFY_JSON="$json_file"
+        export PLAYLIST_NAME="liked_songs_${today}"
+    else
+        print_error "Failed to export Spotify liked songs"
+    fi
+}
+
+# Step 1b: Export Spotify playlist
 export_spotify_playlist() {
     local playlist_input="$1"
     local playlist_name="$2"
@@ -179,25 +236,66 @@ main() {
     if [[ "$DEBUG_MODE" == true ]]; then
         echo "         DEBUG MODE ENABLED"
     fi
+    if [[ "$LIKED_SONGS_MODE" == true ]]; then
+        echo "        LIKED SONGS MODE"
+    fi
     echo "=========================================="
     echo -e "${NC}"
     
-    # Check if playlist argument provided
-    if [[ $# -eq 0 ]]; then
-        echo "Usage: $0 [playlist_name_or_url_or_index] [--debug]"
+    # Check liked songs mode first
+    if [[ "$LIKED_SONGS_MODE" == true ]]; then
+        print_step "Running in liked songs mode..."
+        # Check prerequisites
+        check_python
+        setup_directories
+        
+        # Export liked songs and set playlist name
+        export_spotify_liked_songs
+        playlist_name="$PLAYLIST_NAME"
+        
+        # Skip to pipeline
+        search_youtube_matches "$playlist_name"
+        download_audio_files "$playlist_name"
+        create_youtube_playlist "$playlist_name"
+        
+        # Final summary
+        echo -e "${GREEN}"
+        echo "=========================================="
+        echo "         Liked Songs Pipeline Complete!"
+        echo "=========================================="
+        echo -e "${NC}"
+        echo "Files created:"
+        echo "  Spotify JSON: $SPOTIFY_JSON"
+        echo "  Enriched JSON: $ENRICHED_JSON"
+        echo "  Songs folder: $SONGS_DIR"
+        echo ""
+        echo "Total songs downloaded: $(find "$SONGS_DIR" -name "*.mp3" | wc -l)"
+        echo ""
+        print_success "Liked songs pipeline completed successfully!"
+        return
+    fi
+    
+    # Check if playlist argument provided (regular playlist mode)
+    if [[ -z "$PLAYLIST_INPUT" ]]; then
+        echo "Usage: $0 [--debug] [playlist_name_or_url_or_index]"
+        echo "   or: $0 [playlist_name_or_url_or_index] [--debug]"
+        echo "   or: $0 --liked-songs [--test-limit N] [--debug]"
         echo ""
         echo "Examples:"
-        echo "  $0 \"My Awesome Playlist\"                   # Normal operation (INFO level)"
-        echo "  $0 \"My Awesome Playlist\" --debug           # Debug mode (detailed logging)"
-        echo "  $0 \"https://open.spotify.com/playlist/...\"  # From Spotify URL"
-        echo "  $0 1 --debug                                # By playlist index with debug"
+        echo "  $0 \"My Awesome Playlist\"                   # Normal playlist operation"
+        echo "  $0 --debug \"My Awesome Playlist\"           # Debug mode with playlist"
+        echo "  $0 --liked-songs                            # Export all liked songs"
+        echo "  $0 --liked-songs --test-limit 5             # Export first 5 liked songs"
+        echo "  $0 --liked-songs --test-limit 10 --debug    # Liked songs with debug"
+        echo "  $0 --debug 1                                # Debug mode with playlist index"
+        echo "  $0 \"https://open.spotify.com/playlist/...\" --debug  # URL with debug"
         echo ""
         echo "Or run without arguments to list playlists first:"
-        python spoty_exporter_MK1.py -l
+        python spoty_exporter_MK1.py -l $(get_log_flags)
         echo ""
         read -p "Enter playlist name, URL, or index: " playlist_input
     else
-        playlist_input="$1"
+        playlist_input="$PLAYLIST_INPUT"
     fi
     
     # Check prerequisites

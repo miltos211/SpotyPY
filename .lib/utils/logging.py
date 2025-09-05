@@ -12,6 +12,10 @@ from pathlib import Path
 # Thread-safe print lock for legacy compatibility
 print_lock = threading.Lock()
 
+# Global state for current logging configuration
+CURRENT_LOG_LEVEL = "INFO"
+CURRENT_QUIET = False
+
 class ThreadSafeFormatter(logging.Formatter):
     """Thread-safe formatter that includes thread ID"""
     
@@ -37,6 +41,11 @@ def setup_logging(script_name: str, level: str = "INFO", quiet: bool = False):
     Returns:
         logger: Configured logger instance
     """
+    global CURRENT_LOG_LEVEL, CURRENT_QUIET
+    
+    # Store current configuration for library functions
+    CURRENT_LOG_LEVEL = level
+    CURRENT_QUIET = quiet
     
     # Create logs directory if it doesn't exist
     log_dir = Path("logs")
@@ -64,7 +73,8 @@ def setup_logging(script_name: str, level: str = "INFO", quiet: bool = False):
     if quiet:
         console_handler.setLevel(logging.WARNING)
     else:
-        console_handler.setLevel(logging.INFO)
+        # Respect the main script's log level for console output
+        console_handler.setLevel(getattr(logging, level.upper()))
     console_handler.setFormatter(simple_formatter)
     logger.addHandler(console_handler)
     
@@ -82,13 +92,13 @@ def setup_logging(script_name: str, level: str = "INFO", quiet: bool = False):
 
 def get_logger(name: str = None) -> logging.Logger:
     """
-    Get an existing logger or create a basic one.
+    Get an existing logger that inherits the current log level from main script.
     
     Args:
         name: Logger name. If None, uses the calling module name
     
     Returns:
-        logger: Logger instance
+        logger: Logger instance with same level as main script
     """
     if name is None:
         # Try to determine caller's module name
@@ -97,9 +107,9 @@ def get_logger(name: str = None) -> logging.Logger:
     
     logger = logging.getLogger(name)
     
-    # If logger has no handlers, set up basic logging
+    # If logger has no handlers, set up logging using current global configuration
     if not logger.handlers:
-        logger = setup_logging(name)
+        logger = setup_logging(name, level=CURRENT_LOG_LEVEL, quiet=CURRENT_QUIET)
     
     return logger
 

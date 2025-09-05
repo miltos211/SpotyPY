@@ -20,7 +20,7 @@ except ImportError:
     sys.exit(1)
 
 # Import logging utilities
-from utils.logging import thread_safe_print  # setup_logging and LoggerAdapter imported in main()
+# Logging imports handled in main() function
 
 # Import path utilities
 from utils.paths import PathValidator, validate_input_file, validate_output_file
@@ -41,8 +41,20 @@ logger = None
 # Remove duplicate thread_safe_print - use the one from utils.logging
 
 def rate_limited_request(func, *args, **kwargs):
-    """Execute a function with rate limiting"""
+    """Execute a function with rate limiting and comprehensive logging"""
     global last_request_time
+    
+    # Log the API call details
+    func_name = getattr(func, '__name__', str(func))
+    query_info = args[0] if args else 'unknown'
+    
+    # Truncate long queries for cleaner logs
+    if isinstance(query_info, str) and len(query_info) > 50:
+        query_display = query_info[:47] + "..."
+    else:
+        query_display = query_info
+    
+    logger.debug(f"YouTube Music API call: {func_name}(query='{query_display}')")
     
     with rate_limit_lock:
         current_time = time.time()
@@ -50,11 +62,46 @@ def rate_limited_request(func, *args, **kwargs):
         
         # Ensure minimum 0.1 second delay between requests
         if time_since_last < 0.1:
-            time.sleep(0.1 - time_since_last)
+            sleep_time = 0.1 - time_since_last
+            logger.debug(f"Rate limiting: sleeping {sleep_time:.3f}s")
+            time.sleep(sleep_time)
         
         last_request_time = time.time()
     
-    return func(*args, **kwargs)
+    try:
+        result = func(*args, **kwargs)
+        
+        # Log successful result
+        if isinstance(result, list):
+            logger.debug(f"YouTube Music API success: {func_name} returned {len(result)} results")
+        elif isinstance(result, dict):
+            logger.debug(f"YouTube Music API success: {func_name} returned data")
+        else:
+            logger.debug(f"YouTube Music API success: {func_name} completed")
+            
+        return result
+        
+    except Exception as e:
+        error_type = type(e).__name__
+        error_msg = str(e)
+        
+        logger.error(f"YouTube Music API error in {func_name}: {error_type}: {error_msg}")
+        
+        # Check for specific ytmusicapi error patterns
+        if "quota" in error_msg.lower() or "429" in error_msg:
+            logger.error("YouTube Music API quota exceeded or rate limited")
+            logger.warning("Consider increasing delays between requests")
+        elif "auth" in error_msg.lower() or "401" in error_msg:
+            logger.error("YouTube Music authentication failed - oauth.json may need refresh")
+            logger.error("Try running OAuth setup again")
+        elif "timeout" in error_msg.lower():
+            logger.warning(f"YouTube Music API timeout for {func_name} - network issue?")
+        elif "403" in error_msg:
+            logger.error("YouTube Music API access forbidden - check authentication")
+        else:
+            logger.error(f"Unknown YouTube Music API error: {error_msg}")
+            
+        raise
 
 def setup_oauth() -> Optional[YTMusic]:
     """Setup OAuth authentication for YouTube Music"""
@@ -79,11 +126,20 @@ def setup_oauth() -> Optional[YTMusic]:
     
     try:
         # Run ytmusicapi oauth command
-        result = subprocess.run([
-            sys.executable, "-m", "ytmusicapi", "oauth"
-        ], cwd=os.getcwd(), timeout=300)
+        cmd = [sys.executable, "-m", "ytmusicapi", "oauth"]
+        logger.debug(f"Executing OAuth command: {' '.join(cmd)}")
+        
+        result = subprocess.run(cmd, cwd=os.getcwd(), timeout=300, 
+                               capture_output=True, text=True)
+        
+        # Always log ytmusicapi oauth output for debugging
+        if result.stdout.strip():
+            logger.debug(f"ytmusicapi oauth stdout: {result.stdout.strip()}")
+        if result.stderr.strip():
+            logger.debug(f"ytmusicapi oauth stderr: {result.stderr.strip()}")
         
         if result.returncode == 0:
+            logger.info("OAuth setup completed successfully")
             print("OAuth setup completed.")
             
             # Check if oauth.json was created
@@ -91,18 +147,26 @@ def setup_oauth() -> Optional[YTMusic]:
                 try:
                     yt = YTMusic(oauth_file)
                     yt.get_home()
+                    logger.info("OAuth authentication verified successfully")
                     print("OAuth authentication verified.")
                     return yt
                 except Exception as e:
+                    logger.error(f"OAuth verification failed: {e}")
                     print(f"OAuth verification failed: {e}")
             else:
+                logger.error("OAuth file not found after setup - setup may have failed")
                 print("OAuth file not found after setup.")
         else:
+            logger.error(f"OAuth setup failed with return code {result.returncode}")
+            if result.stderr.strip():
+                logger.error(f"OAuth setup error details: {result.stderr.strip()}")
             print("OAuth setup command failed.")
             
     except subprocess.TimeoutExpired:
+        logger.error("OAuth setup timed out after 5 minutes")
         print("OAuth setup timed out. Please try again.")
     except Exception as e:
+        logger.exception(f"Exception during OAuth setup: {str(e)}")
         print(f"Failed to run OAuth setup: {e}")
     
     # Try browser headers as fallback
@@ -213,7 +277,15 @@ def search_youtube_music(yt: YTMusic, query: str, max_results: int = 5) -> List[
         return results
         
     except Exception as e:
-        logger.error(f"Search failed for '{query}': {e}")
+        error_type = type(e).__name__
+        logger.error(f"YouTube Music search failed for '{query}': {error_type}: {e}")
+        
+        # Additional context for search failures
+        if len(query) > 100:
+            logger.warning(f"Search query very long ({len(query)} chars) - may cause API issues")
+        if not query.strip():
+            logger.warning("Empty search query provided")
+            
         return []
 
 def build_search_query(track: Dict[str, Any]) -> str:
@@ -248,25 +320,47 @@ def build_search_query(track: Dict[str, Any]) -> str:
 def enrich_track_with_youtube(yt: YTMusic, track: Dict[str, Any], index: int, total: int) -> Dict[str, Any]:
     """Enrich a single track with YouTube data (thread-safe)"""
     
-    thread_safe_print(f"[{index}/{total}] {track.get('name', 'Unknown')} by {', '.join(track.get('artists', ['Unknown']))}")
+    logger.info(f"[{index}/{total}] {track.get('name', 'Unknown')} by {', '.join(track.get('artists', ['Unknown']))}")
     
     # Build search query
     query = build_search_query(track)
     if not query:
-        thread_safe_print(f"    Could not build search query")
+        logger.warning(f"    Could not build search query")
         return {
             "spotify": track,
-            "youtube": None
+            "youtube": None,
+            "download_state": {
+                "status": "pending",
+                "attempt_count": 0,
+                "failure_count": 0,
+                "last_error": None,
+                "last_attempt": None,
+                "delays_applied": [],
+                "file_path": None,
+                "file_size": None,
+                "completed_at": None
+            }
         }
     
     # Search YouTube Music
     search_results = search_youtube_music(yt, query, max_results=3)
     
     if not search_results:
-        thread_safe_print(f"    No results found")
+        logger.warning(f"    No results found")
         return {
             "spotify": track,
-            "youtube": None
+            "youtube": None,
+            "download_state": {
+                "status": "pending",
+                "attempt_count": 0,
+                "failure_count": 0,
+                "last_error": None,
+                "last_attempt": None,
+                "delays_applied": [],
+                "file_path": None,
+                "file_size": None,
+                "completed_at": None
+            }
         }
     
     # Take the first (best) result
@@ -277,17 +371,39 @@ def enrich_track_with_youtube(yt: YTMusic, track: Dict[str, Any], index: int, to
     
     if youtube_metadata:
         video_id = youtube_metadata["id"]["videoId"]
-        thread_safe_print(f"    Found: {best_result.get('title')} (ID: {video_id})")
+        logger.info(f"    Found: {best_result.get('title')} (ID: {video_id})")
         
         return {
             "spotify": track,
-            "youtube": youtube_metadata
+            "youtube": youtube_metadata,
+            "download_state": {
+                "status": "pending",
+                "attempt_count": 0,
+                "failure_count": 0,
+                "last_error": None,
+                "last_attempt": None,
+                "delays_applied": [],
+                "file_path": None,
+                "file_size": None,
+                "completed_at": None
+            }
         }
     else:
-        thread_safe_print(f"    Failed to process result")
+        logger.error(f"    Failed to process result")
         return {
             "spotify": track,
-            "youtube": None
+            "youtube": None,
+            "download_state": {
+                "status": "pending",
+                "attempt_count": 0,
+                "failure_count": 0,
+                "last_error": None,
+                "last_attempt": None,
+                "delays_applied": [],
+                "file_path": None,
+                "file_size": None,
+                "completed_at": None
+            }
         }
 
 def enrich_track_worker(args):
@@ -299,7 +415,7 @@ def enrich_tracks_with_youtube_music_threaded(tracks: List[Dict[str, Any]], yt: 
     """Enrich all tracks with YouTube Music data using multithreading"""
     
     total = len(tracks)
-    thread_safe_print(f"\nProcessing {total} tracks with {max_workers} concurrent threads...\n")
+    logger.info(f"Processing {total} tracks with {max_workers} concurrent threads")
     
     # Prepare worker arguments
     worker_args = [(yt, track, i+1, total) for i, track in enumerate(tracks)]
@@ -319,7 +435,7 @@ def enrich_tracks_with_youtube_music_threaded(tracks: List[Dict[str, Any]], yt: 
                 result = future.result()
                 results[index] = result
             except Exception as e:
-                thread_safe_print(f"Exception processing track {index}: {e}")
+                logger.error(f"Exception processing track {index}: {e}")
                 # Create a failed result
                 results[index] = {
                     "spotify": tracks[index-1],
