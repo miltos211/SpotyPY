@@ -10,7 +10,7 @@ A comprehensive Python application that transfers Spotify playlists to YouTube M
 - 🎨 **Professional Tagging** - Album art, track info, and Spotify URLs
 - 🚀 **Multi-threaded Processing** - Concurrent downloads for maximum speed
 - 🐛 **Advanced Debugging** - Comprehensive logging system with configurable levels
-- 🖥️ **Multiple Interfaces** - Shell pipeline, GUI, and individual CLI scripts
+- 🖥️ **Multiple Interfaces** - Shell pipeline and individual CLI scripts
 - 📱 **Cross-platform** - Works on Windows, macOS, and Linux
 - 🔒 **Thread-safe Operations** - Robust concurrent processing without race conditions
 - 🤖 **Smart Bot Detection** - Automatic YouTube anti-bot recovery with context-aware delays
@@ -32,7 +32,7 @@ A comprehensive Python application that transfers Spotify playlists to YouTube M
 
 **Enhanced JSON Structure**
 - **Download state tracking** - persistent attempt/failure history per song
-- **Resume capability** - interrupted downloads can be resumed intelligently  
+- **Smart retry logic** - failed tracks intelligently retried with context-aware delays
 - **Backward compatibility** - all existing JSON files continue working
 
 ## 🚀 Quick Start
@@ -56,29 +56,63 @@ pip install -r requirements.txt
 ./start.sh --liked-songs                      # Export all liked songs (full library)
 ```
 
-### GUI Application
+### Interactive Mode
+Run any script without arguments for interactive mode:
 ```bash
-python gui.py
+# Interactive playlist browser and selection
+python spoty_exporter_MK1.py
+
+# Interactive YouTube playlist creation
+python yt_PushMK1.py
 ```
 
 ### Individual Scripts
+
+#### 1. Export Spotify Playlists
 ```bash
-# Export Spotify playlist
-python spoty_exporter_MK1.py --list  # Show all playlists
+# List all playlists
+python spoty_exporter_MK1.py --list
+
+# Export by name, index, URL, or ID
 python spoty_exporter_MK1.py -p "My Playlist" -o out/playlist.json
+python spoty_exporter_MK1.py -p 1 -o out/playlist.json                          # By index
+python spoty_exporter_MK1.py --playlist-url "https://open.spotify.com/playlist/..." -o out/playlist.json
+python spoty_exporter_MK1.py --playlist-id "37i9dQZF1DX0XUsuxWHRQd" -o out/playlist.json
 
-# Export Spotify liked songs  
-python spoty_exporter_MK1.py --liked-songs --test-limit 5    # First 5 liked songs
-python spoty_exporter_MK1.py --liked-songs                   # All liked songs (auto-dated folder)
+# Export liked songs  
+python spoty_exporter_MK1.py --liked-songs --test-limit 5 -o out/liked.json     # First 5 liked songs
+python spoty_exporter_MK1.py --liked-songs                                      # All liked songs (auto-dated)
+```
 
-# Find YouTube matches
+#### 2. Find YouTube Matches
+```bash
+# Sequential processing (default)
+python yt_searchtMK1.py -i out/playlist.json -o out/enriched.json
+
+# Multi-threaded processing
 python yt_searchtMK1.py -i out/playlist.json -o out/enriched.json -t 3
+```
 
-# Download audio files  
+#### 3. Download Audio Files
+```bash
+# Sequential download
+python yt_FetchMK1.py -i out/enriched.json -o songs/
+
+# Multi-threaded download
 python yt_FetchMK1.py -i out/enriched.json -o songs/ -t 3
 
-# Create YouTube playlist (optional)
+# Custom artwork directory
+python yt_FetchMK1.py -i out/enriched.json -o songs/ --artwork-dir temp/
+```
+
+#### 4. Create YouTube Playlists (Optional)
+```bash
+# Private playlist (default)
 python yt_PushMK1.py -i out/enriched.json -t "My New Playlist"
+
+# Public or unlisted playlists
+python yt_PushMK1.py -i out/enriched.json -t "My Playlist" --privacy public
+python yt_PushMK1.py -i out/enriched.json -t "My Playlist" --privacy unlisted
 ```
 
 ## 🔧 Advanced Configuration
@@ -177,8 +211,7 @@ Key packages: `spotipy`, `ytmusicapi`, `yt-dlp`, `mutagen`, `requests`, `google-
 
 ### Main Components
 - `start.sh` - **Automated pipeline script** (recommended entry point)
-- `gui.py` - **Kivy-based graphical interface** with real-time progress
-- Individual processing scripts with consistent CLI interfaces
+- Individual processing scripts with consistent CLI interfaces and interactive modes
 
 ### Processing Pipeline
 1. **spoty_exporter_MK1.py** - Export Spotify playlists to JSON
@@ -308,8 +341,22 @@ project/
 ├── out/           # JSON exports and enriched data
 ├── songs/         # Downloaded MP3 files with metadata
 ├── logs/          # Debug and application logs
-└── old_scripts/   # Automatic backups of modified files
+├── old_scripts/   # Automatic backups of modified files
+└── .debug/        # Utility scripts for troubleshooting
 ```
+
+### 4. Utility Tools
+The project includes utility scripts for advanced users:
+
+```bash
+# Extract YouTube URLs from enriched JSON (for external tools)
+python .debug/json_cleaner.py
+```
+
+This utility converts enriched JSON files to plain text lists of YouTube URLs, useful for:
+- External downloaders or tools
+- Batch processing with other applications
+- Manual verification of matched videos
 
 ## 🐛 Troubleshooting
 
@@ -337,11 +384,10 @@ project/
 - System adapts delays based on failure patterns and thread count
 - No manual intervention required
 
-**Resume/Recovery System**:
-- **Automatic detection** - Interrupted downloads resume from stopping point
-- **File validation** - Corrupted files automatically detected and re-downloaded
-- **Smart retry** - Failed tracks retried with intelligent delay patterns
-- Use `./start.sh --resume "Playlist Name"` or `./start.sh "Playlist Name" --fresh`
+**Smart Retry System**:
+- **Persistent state tracking** - Download attempts and failures tracked in JSON
+- **Context-aware delays** - Bot detection delays adapt to thread count and failure patterns
+- **Intelligent retry** - Failed tracks retried with smart delays to avoid repeated blocking
 
 **Liked songs authentication issues**:
 - Re-authentication automatically triggered when scope changes
