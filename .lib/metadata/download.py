@@ -3,6 +3,7 @@ import subprocess
 import json
 import re
 import time
+import random
 from urllib.parse import quote
 
 # Import proper logging system
@@ -11,14 +12,89 @@ from utils.logging import get_logger
 # Initialize logger for this module
 logger = get_logger("download")
 
+def detect_youtube_bot_blocking(stderr_output):
+    """
+    Detect YouTube's 'Sign in to confirm you're not a bot' error
+    
+    Args:
+        stderr_output: yt-dlp stderr string
+        
+    Returns:
+        bool: True if bot detection pattern found
+    """
+    blocking_patterns = [
+        "sign in to confirm you're not a bot",
+        "use --cookies-from-browser or --cookies",
+        "authentication. see"  # Part of the full error message
+    ]
+    
+    stderr_lower = stderr_output.lower()
+    return any(pattern in stderr_lower for pattern in blocking_patterns)
+
+def calculate_smart_bot_delay(thread_count=1, recent_failure_count=0, recent_attempt_count=0, song_failures=0, song_attempts=0):
+    """
+    Calculate optimal delay for bot detection recovery
+    
+    Formula:
+    - Base: 80 seconds (conservative starting point)
+    - Thread Factor: +40% per extra thread (reduces suspicion on single-threaded downloads)
+    - Failure Rate Factor: Double delay at 100% batch failure rate (linear scaling)
+    - Song Penalty: +50% max for problem tracks (tracks that consistently fail)
+    - Randomization: ±20% variance to break predictable patterns
+    - Range: 60-240 seconds (user-specified acceptable range)
+    
+    Args:
+        thread_count: Number of concurrent download threads
+        recent_failure_count: Recent failures in batch
+        recent_attempt_count: Recent attempts in batch  
+        song_failures: Individual song failure count
+        song_attempts: Individual song attempt count
+        
+    Returns:
+        float: Delay in seconds (60-240 range)
+    """
+    base_delay = 80
+    
+    # Thread escalation: +40% per extra thread
+    thread_factor = 1 + (thread_count - 1) * 0.4
+    
+    # Batch failure rate escalation: double at 100% failure rate  
+    if recent_attempt_count > 0:
+        batch_failure_rate = recent_failure_count / recent_attempt_count
+        failure_factor = 1 + batch_failure_rate
+    else:
+        failure_factor = 1
+    
+    # Individual song penalty for problem tracks
+    if song_attempts > 0:
+        song_failure_rate = song_failures / song_attempts
+        song_penalty = 1 + (song_failure_rate * 0.5)  # +50% max penalty
+    else:
+        song_penalty = 1
+    
+    # Calculate with all factors
+    calculated = base_delay * thread_factor * failure_factor * song_penalty
+    
+    # Randomize (±20% variance)  
+    randomized = random.uniform(calculated * 0.8, calculated * 1.2)
+    
+    # Clamp to acceptable range
+    final_delay = max(60, min(240, randomized))
+    
+    logger.debug(f"Smart delay calculation: base={base_delay}, thread_factor={thread_factor:.2f}, failure_factor={failure_factor:.2f}, song_penalty={song_penalty:.2f}, final={final_delay:.1f}s")
+    
+    return final_delay
+
 def ensure_output_dir(path):
     """Create directory if it doesn't exist"""
     if not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
-        print(f"Created directory: {path}")
+        logger.info(f"Created directory: {path}")
     return path
 
-def run_yt_dlp(video_url, output_dir, audio_format="mp3", audio_quality="0", custom_filename=None):
+def run_yt_dlp_with_context(video_url, output_dir, audio_format="mp3", audio_quality="0", custom_filename=None, 
+                           thread_count=1, batch_failure_count=0, batch_attempt_count=0, 
+                           song_failure_count=0, song_attempt_count=0):
     """Download audio from YouTube using yt-dlp
     
     Args:
@@ -62,6 +138,22 @@ def run_yt_dlp(video_url, output_dir, audio_format="mp3", audio_quality="0", cus
         # Run yt-dlp
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         
+        # Always log yt-dlp stdout/stderr for debugging (even on success)
+        if result.stdout.strip():
+            logger.debug(f"yt-dlp stdout: {result.stdout.strip()}")
+        if result.stderr.strip():
+            # Log stderr at debug level for troubleshooting
+            logger.debug(f"yt-dlp stderr: {result.stderr.strip()}")
+            
+            # Check for specific YouTube issues and log them appropriately
+            stderr_lower = result.stderr.lower()
+            if "some tv client https formats have been skipped as they are drm protected" in stderr_lower:
+                logger.info("YouTube DRM warning detected (TV client formats skipped) - using web client fallback")
+            if "some web client https formats have been skipped" in stderr_lower:
+                logger.info("YouTube web client format issues detected - may affect quality")
+            if "youtube is forcing sabr streaming" in stderr_lower:
+                logger.info("YouTube SABR streaming detected - handled by player config bypass")
+        
         if result.returncode == 0:
             # Try to find the downloaded file
             if custom_filename:
@@ -98,29 +190,90 @@ def run_yt_dlp(video_url, output_dir, audio_format="mp3", audio_quality="0", cus
                 "message": "Download successful"
             }
         else:
-            # Check if it's a blocking error
-            error_text = result.stderr.lower()
-            if "sign in to confirm" in error_text or "video unavailable" in error_text:
+            # Log detailed failure information
+            logger.error(f"yt-dlp failed with return code {result.returncode}")
+            logger.error(f"yt-dlp command: {' '.join(cmd)}")
+            
+            # Check if it's a bot detection blocking error
+            if detect_youtube_bot_blocking(result.stderr):
+                logger.warning("YouTube bot detection triggered - applying smart delay")
+                
+                # Calculate context-aware delay with real batch and song context
+                delay = calculate_smart_bot_delay(
+                    thread_count=thread_count,
+                    recent_failure_count=batch_failure_count,
+                    recent_attempt_count=batch_attempt_count,
+                    song_failures=song_failure_count,
+                    song_attempts=song_attempt_count
+                )
+                
+                logger.info(f"Bot detection delay: {delay:.1f} seconds")
+                time.sleep(delay)
+                
                 return {
                     "status": 500,
-                    "error": f"YouTube blocking detected: {result.stderr}"
+                    "error": "DL_BOT_DETECTED",
+                    "delay_applied": delay,
+                    "retry_recommended": True,
+                    "stderr": result.stderr
+                }
+            elif "video unavailable" in result.stderr.lower():
+                logger.warning("Video unavailable detected")
+                return {
+                    "status": 500,
+                    "error": f"Video unavailable: {result.stderr}"
+                }
+            elif "the downloaded file is empty" in result.stderr.lower():
+                logger.warning("Empty file download - likely DRM or format extraction issue")
+                return {
+                    "status": 500,
+                    "error": f"Empty file downloaded (DRM/format issue): {result.stderr}"
+                }
+            elif "private video" in result.stderr.lower() or "this video is private" in result.stderr.lower():
+                logger.info("Video is private - expected failure")
+                return {
+                    "status": 404,
+                    "error": f"Video is private: {result.stderr}"
                 }
             else:
+                logger.error(f"Unknown yt-dlp failure: {result.stderr}")
                 return {
                     "status": 500,
                     "error": f"yt-dlp failed: {result.stderr}"
                 }
                 
     except subprocess.TimeoutExpired:
+        logger.error(f"yt-dlp timeout after 5 minutes for URL: {video_url}")
         return {
             "status": 500,
             "error": "Download timeout (5 minutes)"
         }
     except Exception as e:
+        logger.exception(f"Unexpected error in yt-dlp download: {str(e)}")
+        logger.debug(f"Failed URL: {video_url}")
+        logger.debug(f"Output directory: {output_dir}")
         return {
             "status": 500,
             "error": f"Unexpected error: {str(e)}"
         }
+
+def run_yt_dlp(video_url, output_dir, audio_format="mp3", audio_quality="0", custom_filename=None):
+    """
+    Compatibility wrapper for run_yt_dlp_with_context
+    Uses default context values for backwards compatibility
+    """
+    return run_yt_dlp_with_context(
+        video_url=video_url,
+        output_dir=output_dir, 
+        audio_format=audio_format,
+        audio_quality=audio_quality,
+        custom_filename=custom_filename,
+        thread_count=1,
+        batch_failure_count=0,
+        batch_attempt_count=0,
+        song_failure_count=0,
+        song_attempt_count=0
+    )
 
 def find_lyrics_video(song_name, artist_name, expected_duration=None):
     """
@@ -148,7 +301,7 @@ def find_lyrics_video(song_name, artist_name, expected_duration=None):
         return None
         
     except Exception as e:
-        print(f"Error finding lyrics video: {e}")
+        logger.warning(f"Error finding lyrics video for '{song_name}' by '{artist_name}': {e}")
         return None
 
 def search_youtube_for_lyrics(query, expected_duration=None):
@@ -168,6 +321,10 @@ def search_youtube_for_lyrics(query, expected_duration=None):
         ]
         
         result = subprocess.run(search_cmd, capture_output=True, text=True, timeout=30)
+        
+        # Log search command output for debugging
+        if result.stderr.strip():
+            logger.debug(f"yt-dlp search stderr: {result.stderr.strip()}")
         
         if result.returncode == 0:
             lines = result.stdout.strip().split('\n')
@@ -197,7 +354,7 @@ def search_youtube_for_lyrics(query, expected_duration=None):
         return None
         
     except Exception as e:
-        print(f"Error searching YouTube: {e}")
+        logger.warning(f"Error searching YouTube for query '{query}': {e}")
         return None
 
 def parse_duration(duration_str):
@@ -227,115 +384,3 @@ def get_song_duration_seconds(entry):
     except Exception as e:
         logger.warning(f"Could not get song duration: {e}")
     return None
-
-def process_song(index, entry, total, output_dir):
-    logger.debug(f"=== Processing song {index}/{total} ===")
-    
-    # Log entry structure
-    logger.debug(f"Entry keys: {list(entry.keys())}")
-    logger.debug(f"Spotify data: {entry.get('spotify', {}).get('name', 'Unknown')} by {entry.get('spotify', {}).get('artists', ['Unknown'])}")
-    
-    youtube = entry.get("youtube")
-    logger.debug(f"YouTube data present: {youtube is not None}")
-    
-    if not youtube:
-        logger.warning("No YouTube data in entry")
-        print(f"[{index}/{total}] Skipped: Missing YouTube metadata")
-        return "skipped"
-
-    logger.debug(f"YouTube keys: {list(youtube.keys())}")
-    
-    if not youtube.get("id"):
-        logger.warning("No 'id' field in YouTube data")
-        print(f"[{index}/{total}] Skipped: Missing YouTube metadata")
-        return "skipped"
-
-    video_id = youtube["id"].get("videoId")
-    logger.debug(f"Video ID extracted: {video_id}")
-    
-    if not video_id:
-        logger.warning("No videoId in YouTube.id field")
-        print(f"[{index}/{total}] Skipped: Missing videoId")
-        return "skipped"
-
-    video_url = f"https://www.youtube.com/watch?v={video_id}"
-    logger.debug(f"Constructed video URL: {video_url}")
-    
-    spotify_name = entry.get('spotify', {}).get('name', 'Unknown')
-    spotify_artists = entry.get('spotify', {}).get('artists', ['Unknown'])
-    song_duration = get_song_duration_seconds(entry)
-    
-    print(f"\n[{index}/{total}] Downloading: {spotify_name} by {', '.join(spotify_artists)}")
-    print(f" Video URL: {video_url}")
-    logger.debug(f"Starting yt-dlp download to: {output_dir}")
-
-    # Try primary download
-    logger.debug("Calling run_yt_dlp function")
-    download_result = run_yt_dlp(
-        video_url=video_url,
-        output_dir=output_dir,
-        audio_format="mp3",
-        audio_quality="0"
-    )
-    
-    logger.debug(f"Primary yt-dlp result: {download_result}")
-    logger.debug(f"Primary download status: {download_result.get('status', 'Unknown')}")
-
-    # If primary download failed with YouTube blocking, try lyrics video fallback
-    if download_result["status"] == 500:  # YouTube blocking detected
-        logger.info("Primary download failed due to YouTube blocking, trying lyrics video fallback")
-        print(f" Primary download blocked by YouTube, searching for lyrics video...")
-        
-        # Search for lyrics video
-        lyrics_video_id = find_lyrics_video(
-            song_name=spotify_name,
-            artist_name=', '.join(spotify_artists),
-            expected_duration=song_duration
-        )
-        
-        if lyrics_video_id:
-            logger.debug(f"Found lyrics video: {lyrics_video_id}")
-            lyrics_url = f"https://www.youtube.com/watch?v={lyrics_video_id}"
-            print(f" Trying lyrics video: {lyrics_url}")
-            
-            # Try downloading the lyrics video
-            lyrics_result = run_yt_dlp(
-                video_url=lyrics_url,
-                output_dir=output_dir,
-                audio_format="mp3",
-                audio_quality="0"
-            )
-            
-            if lyrics_result["status"] == 200:
-                logger.info("Lyrics video download successful")
-                print(f" Lyrics video download successful!")
-                download_result = lyrics_result
-            else:
-                logger.warning(f"Lyrics video download also failed: {lyrics_result.get('error', 'Unknown error')}")
-                print(f" Lyrics video download also failed: {lyrics_result.get('error', 'Unknown error')}")
-        else:
-            logger.info("No suitable lyrics video found")
-            print(f" No suitable lyrics video found")
-
-    # Final check if download succeeded
-    if download_result["status"] != 200:
-        logger.error(f"All download attempts failed with status {download_result['status']}: {download_result.get('error', 'Unknown error')}")
-        print(f" All download attempts failed: {download_result['error']}")
-        return "failed"
-
-    file_path = download_result["path"]
-    logger.debug(f"Downloaded file path: {file_path}")
-    logger.debug(f"File exists check: {os.path.isfile(file_path) if file_path else 'No path provided'}")
-    
-    if not os.path.isfile(file_path):
-        logger.error(f"Downloaded file not found at: {file_path}")
-        print(" Skipped: Downloaded file not found.")
-        return "skipped"
-
-    file_size = os.path.getsize(file_path)
-    logger.debug(f"File size: {file_size} bytes")
-    print(f" Download complete: {file_path}")
-    
-    result = { "status": "downloaded", "file_path": file_path, "entry": entry }
-    logger.debug(f"Returning success result: {result['status']}")
-    return result

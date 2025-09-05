@@ -13,7 +13,7 @@ import multiprocessing
 # Setup path to .lib/
 sys.path.append(os.path.join(os.path.dirname(__file__), '.lib'))
 
-from metadata.download import run_yt_dlp, ensure_output_dir, find_lyrics_video
+from metadata.download import run_yt_dlp, run_yt_dlp_with_context, ensure_output_dir, find_lyrics_video
 from metadata.tagger import tag_from_enriched
 from metadata.artwork import embed_art_from_enriched
 
@@ -78,6 +78,74 @@ def load_enriched_json(path):
         print(f" Failed to load JSON: {e}")
         return None
 
+def save_enriched_json(data, path):
+    """Save updated JSON data back to file with download state tracking"""
+    logger.debug(f"Saving JSON to: {path}")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        logger.debug(f"Successfully saved JSON with {len(data)} entries")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save JSON: {e}")
+        return False
+
+def initialize_download_state(entry):
+    """Initialize download_state if it doesn't exist"""
+    if 'download_state' not in entry:
+        entry['download_state'] = {
+            "status": "pending",
+            "attempt_count": 0,
+            "failure_count": 0,
+            "last_error": None,
+            "last_attempt": None,
+            "delays_applied": [],
+            "file_path": None,
+            "file_size": None,
+            "completed_at": None
+        }
+    return entry['download_state']
+
+def should_skip_problem_song(download_state, max_failure_rate=0.8):
+    """Check if song should be skipped due to high failure rate"""
+    if download_state['attempt_count'] >= 3:  # Only skip after multiple attempts
+        failure_rate = download_state['failure_count'] / download_state['attempt_count']
+        if failure_rate >= max_failure_rate:
+            logger.warning(f"Skipping problem song - failure rate: {failure_rate:.1%} ({download_state['failure_count']}/{download_state['attempt_count']})")
+            return True
+    return False
+
+def update_download_state(entry, status, error=None, file_path=None, delay_applied=None):
+    """Update download_state with attempt results"""
+    download_state = initialize_download_state(entry)
+    
+    # Update attempt count
+    download_state['attempt_count'] += 1
+    download_state['last_attempt'] = time.strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Update based on status
+    if status in ['failed', 'bot_detected']:
+        download_state['failure_count'] += 1
+        download_state['last_error'] = error
+        download_state['status'] = 'failed'
+    elif status == 'completed':
+        download_state['status'] = 'completed'
+        download_state['file_path'] = file_path
+        download_state['completed_at'] = time.strftime('%Y-%m-%d %H:%M:%S')
+        if file_path and os.path.exists(file_path):
+            download_state['file_size'] = os.path.getsize(file_path)
+    elif status == 'skipped':
+        download_state['status'] = 'skipped'
+    
+    # Track delays applied
+    if delay_applied:
+        download_state['delays_applied'].append({
+            'delay': delay_applied,
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+        })
+    
+    return download_state
+
 def get_song_duration_seconds(entry):
     """Extract song duration from Spotify data and convert to seconds"""
     try:
@@ -95,7 +163,7 @@ def process_single_song_complete(song_data):
     Process a single song from start to finish (download + metadata + artwork)
     This runs in its own thread
     """
-    index, entry, total, output_dir = song_data
+    index, entry, total, output_dir, shared_context = song_data
     thread_id = threading.get_ident() % 1000  # Short thread ID for logging
     
     logger.debug(f"=== Starting complete processing for song {index}/{total} ===")
@@ -133,8 +201,8 @@ def sanitize_filename(name):
     return safe_name
 
 def download_song_worker(song_data):
-    """Worker function for downloading a single song"""
-    index, entry, total, output_dir = song_data
+    """Worker function for downloading a single song with JSON state tracking"""
+    index, entry, total, output_dir, shared_context = song_data
     thread_id = threading.get_ident() % 1000
     thread_name = threading.current_thread().name
     process_id = os.getpid()
@@ -150,6 +218,15 @@ def download_song_worker(song_data):
     
     logger.debug(f"=== DOWNLOAD WORKER START === Song #{index}: '{song_display}' | Thread: {thread_name} (ID:{thread_id}) | PID: {process_id}")
     logger.debug(f"Download worker started for song {index}")
+    
+    # Initialize and check download state
+    download_state = initialize_download_state(entry)
+    
+    # Check if this is a problem song that should be skipped
+    if should_skip_problem_song(download_state):
+        update_download_state(entry, 'skipped', error="High failure rate - automatic skip")
+        thread_safe_print(f"[{index}/{total}] Skipped: Problem song ({download_state['failure_count']}/{download_state['attempt_count']} failures)")
+        return "skipped"
     
     # Extract song info (already done above for early logging)
     song_duration = get_song_duration_seconds(entry)
@@ -171,13 +248,23 @@ def download_song_worker(song_data):
     thread_safe_print(f"[{index}/{total}] Downloading: {spotify_name} by {', '.join(spotify_artists)}")
     logger.debug(f"Video URL: {video_url}")
 
-    # Try primary download with thread-safe filename
-    download_result = run_yt_dlp(
+    # Get batch context for smart delay calculation  
+    thread_count = shared_context.get('thread_count', 1)
+    batch_failures = shared_context.get('batch_failures', 0)
+    batch_attempts = shared_context.get('batch_attempts', 0)
+    
+    # Try primary download with thread-safe filename and context
+    download_result = run_yt_dlp_with_context(
         video_url=video_url,
         output_dir=output_dir,
         audio_format="mp3",
         audio_quality="0",
-        custom_filename=safe_filename
+        custom_filename=safe_filename,
+        thread_count=thread_count,
+        batch_failure_count=batch_failures,
+        batch_attempt_count=batch_attempts,
+        song_failure_count=download_state['failure_count'],
+        song_attempt_count=download_state['attempt_count']
     )
     logger.debug(f"Download attempt with safe filename: '{safe_filename}'")
     
@@ -199,12 +286,17 @@ def download_song_worker(song_data):
             logger.debug(f"Found lyrics video: {lyrics_url}")
             thread_safe_print(f"[{index}/{total}] Trying lyrics video...")
             
-            lyrics_result = run_yt_dlp(
+            lyrics_result = run_yt_dlp_with_context(
                 video_url=lyrics_url,
                 output_dir=output_dir,
                 audio_format="mp3",
                 audio_quality="0",
-                custom_filename=safe_filename
+                custom_filename=safe_filename,
+                thread_count=thread_count,
+                batch_failure_count=batch_failures,
+                batch_attempt_count=batch_attempts,
+                song_failure_count=download_state['failure_count'],
+                song_attempt_count=download_state['attempt_count']
             )
             
             if lyrics_result["status"] == 200:
@@ -216,17 +308,49 @@ def download_song_worker(song_data):
         else:
             logger.warning("No suitable lyrics video found")
 
-    # Final check if download succeeded
-    if download_result["status"] != 200:
+    # Update JSON state based on download result  
+    if download_result["status"] == 200:
+        # Success case handled below
+        pass
+    elif download_result["status"] == 500 and download_result.get("error") == "DL_BOT_DETECTED":
+        # Bot detection case - update state with delay info
+        delay_applied = download_result.get("delay_applied")
+        update_download_state(entry, 'bot_detected', 
+                            error="YouTube bot detection", 
+                            delay_applied=delay_applied)
+        # Update shared context for batch tracking
+        with shared_context.get('lock', threading.Lock()):
+            shared_context['batch_failures'] = shared_context.get('batch_failures', 0) + 1
+            shared_context['batch_attempts'] = shared_context.get('batch_attempts', 0) + 1
+        
+        thread_safe_print(f"[{index}/{total}] Failed: Bot detected (delay: {delay_applied:.1f}s)")
+        return "failed"
+    else:
+        # Other failure case
+        update_download_state(entry, 'failed', error=download_result.get('error', 'Unknown error'))
+        with shared_context.get('lock', threading.Lock()):
+            shared_context['batch_failures'] = shared_context.get('batch_failures', 0) + 1
+            shared_context['batch_attempts'] = shared_context.get('batch_attempts', 0) + 1
+            
         thread_safe_print(f"[{index}/{total}] Failed: {download_result.get('error', 'Unknown error')}")
         return "failed"
 
     file_path = download_result["path"]
     if not os.path.isfile(file_path):
-        thread_safe_print(f"[{index}/{total}] Skipped: Downloaded file not found")
-        return "skipped"
+        update_download_state(entry, 'failed', error="Downloaded file not found")
+        thread_safe_print(f"[{index}/{total}] Failed: Downloaded file not found")
+        return "failed"
 
     file_size = os.path.getsize(file_path)
+    
+    # Update JSON state for successful download
+    update_download_state(entry, 'completed', file_path=file_path)
+    
+    # Update batch success tracking
+    with shared_context.get('lock', threading.Lock()):
+        shared_context['batch_attempts'] = shared_context.get('batch_attempts', 0) + 1
+        # Note: batch_failures not incremented on success
+    
     logger.debug(f"=== DOWNLOAD SUCCESS === Song #{index} '{song_display}' | Thread: {thread_name} | File: {os.path.basename(file_path)} | Size: {file_size} bytes")
     logger.debug(f"Download complete: {file_path} ({file_size} bytes)")
     thread_safe_print(f"[{index}/{total}] Download complete: {os.path.basename(file_path)} (by {', '.join(spotify_artists)})")
@@ -321,17 +445,32 @@ def process_metadata_worker(file_path, entry, thread_id):
     
     return "success"
 
-def process_songs_threaded(entries, output_dir, max_workers=3):
-    """Process songs using hybrid approach: threaded downloads, sequential metadata"""
+def process_songs_threaded(entries, output_dir, max_workers=3, json_path=None):
+    """Process songs using hybrid approach: threaded downloads, sequential metadata with JSON state tracking"""
     logger.debug(f"=== HYBRID PROCESSING START === Workers: {max_workers}, Songs: {len(entries)}, PID: {os.getpid()}")
     logger.debug(f"Output directory: {output_dir}")
+    logger.debug(f"JSON state tracking: {'enabled' if json_path else 'disabled'}")
+    
+    # Create shared context for batch tracking and thread coordination
+    shared_context = {
+        'thread_count': max_workers,
+        'batch_failures': 0,
+        'batch_attempts': 0,
+        'lock': threading.Lock(),
+        'json_path': json_path,
+        'entries': entries  # Reference to entries for JSON saving
+    }
     
     # Log all song assignments upfront
     logger.debug(f"=== SONG ASSIGNMENT TABLE ===")
     for i, entry in enumerate(entries):
         song_name = entry.get('spotify', {}).get('name', 'Unknown')
         song_artists = entry.get('spotify', {}).get('artists', ['Unknown'])
-        logger.debug(f"Song #{i+1}: '{song_name}' by {', '.join(song_artists)}")
+        download_state = entry.get('download_state', {})
+        status = download_state.get('status', 'pending')
+        attempts = download_state.get('attempt_count', 0)
+        failures = download_state.get('failure_count', 0)
+        logger.debug(f"Song #{i+1}: '{song_name}' by {', '.join(song_artists)} | Status: {status} ({failures}/{attempts} failures)")
     logger.debug(f"=== END SONG ASSIGNMENT TABLE ===")
     
     logger.debug(f"Starting hybrid processing with {max_workers} download workers")
@@ -340,9 +479,9 @@ def process_songs_threaded(entries, output_dir, max_workers=3):
     results = {"success": 0, "failed": 0, "skipped": 0, "metadata_failed": 0}
     downloaded_files = []
     
-    # Prepare song data for workers
-    song_data_list = [(i+1, entry, total, output_dir) for i, entry in enumerate(entries)]
-    logger.debug(f"=== PREPARED SONG DATA === {len(song_data_list)} song data tuples created")
+    # Prepare song data for workers (now includes shared_context)
+    song_data_list = [(i+1, entry, total, output_dir, shared_context) for i, entry in enumerate(entries)]
+    logger.debug(f"=== PREPARED SONG DATA === {len(song_data_list)} song data tuples created with shared context")
     
     thread_safe_print(f"\nProcessing {total} songs with {max_workers} concurrent download threads...\n")
     
@@ -354,7 +493,7 @@ def process_songs_threaded(entries, output_dir, max_workers=3):
         # Submit all download tasks with detailed logging
         future_to_song = {}
         for i, song_data in enumerate(song_data_list):
-            song_index, entry, total, output_dir = song_data
+            song_index, entry, total, output_dir, shared_context = song_data
             song_name = entry.get('spotify', {}).get('name', 'Unknown')
             future = executor.submit(download_song_worker, song_data)
             future_to_song[future] = song_data
@@ -398,6 +537,14 @@ def process_songs_threaded(entries, output_dir, max_workers=3):
     
     logger.debug(f"=== THREAD POOL END === All download tasks completed | Downloaded: {len(downloaded_files)}, Failed: {results['failed']}, Skipped: {results['skipped']}")
     
+    # Save JSON state after download phase
+    if json_path:
+        logger.debug("Saving JSON state after download phase")
+        if save_enriched_json(entries, json_path):
+            logger.info(f"JSON state saved after downloads: {len(entries)} entries")
+        else:
+            logger.warning("Failed to save JSON state after downloads")
+    
     # Phase 2: Sequential metadata and artwork processing
     if downloaded_files:
         logger.debug(f"=== METADATA PHASE START === Processing {len(downloaded_files)} downloaded files sequentially")
@@ -432,6 +579,21 @@ def process_songs_threaded(entries, output_dir, max_workers=3):
     
     logger.debug(f"=== METADATA PHASE END === All metadata processing completed")
     
+    # Final JSON state save
+    if json_path:
+        logger.debug("Final JSON state save")
+        if save_enriched_json(entries, json_path):
+            logger.info(f"Final JSON state saved: {len(entries)} entries")
+            
+            # Log final statistics
+            completed_count = sum(1 for entry in entries if entry.get('download_state', {}).get('status') == 'completed')
+            failed_count = sum(1 for entry in entries if entry.get('download_state', {}).get('status') == 'failed')
+            skipped_count = sum(1 for entry in entries if entry.get('download_state', {}).get('status') == 'skipped')
+            
+            logger.info(f"JSON state summary - Completed: {completed_count}, Failed: {failed_count}, Skipped: {skipped_count}")
+        else:
+            logger.error("Failed to save final JSON state")
+    
     return results
 
 def process_songs_sequential(entries, output_dir):
@@ -445,9 +607,17 @@ def process_songs_sequential(entries, output_dir):
     logger.debug(f"Starting download phase for {total} tracks")
     print(f"\nDownloading {total} tracks sequentially...\n")
     
+    # Create basic shared context for sequential mode
+    shared_context = {
+        'thread_count': 1,
+        'batch_failures': 0,
+        'batch_attempts': 0,
+        'lock': threading.Lock()
+    }
+    
     # Download phase
     for i, entry in enumerate(entries, 1):
-        song_data = (i, entry, total, output_dir)
+        song_data = (i, entry, total, output_dir, shared_context)
         result = download_song_worker(song_data)
         
         if isinstance(result, dict) and result["status"] == "downloaded":
@@ -544,7 +714,8 @@ def run_cli_mode(args):
         results = process_songs_sequential(entries, str(output_dir))
     else:
         logger.info(f"Using threaded processing with {thread_count} workers")
-        results = process_songs_threaded(entries, str(output_dir), thread_count)
+        logger.info(f"JSON state tracking enabled: {str(input_path)}")
+        results = process_songs_threaded(entries, str(output_dir), thread_count, json_path=str(input_path))
     
     end_time = time.time()
     duration = end_time - start_time
@@ -598,7 +769,8 @@ def run_interactive_mode():
             if choice == "1":  # Threaded
                 thread_count = prompt_thread_count()
                 logger.debug(f"Using {thread_count} threads")
-                results = process_songs_threaded(entries, output_dir, thread_count)
+                logger.info(f"JSON state tracking enabled: {json_path}")
+                results = process_songs_threaded(entries, output_dir, thread_count, json_path=json_path)
             else:  # Sequential
                 results = process_songs_sequential(entries, output_dir)
 
