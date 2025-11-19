@@ -471,14 +471,10 @@ python yt_FetchMK1.py -i input.json -o output/ --debug -t 1
 
 ## 🤝 Contributing
 
-1. Follow the file modification policy in `CLAUDE.md`
+1. Follow the file modification policy in `CONTRIBUTING.md`
 2. Use the centralized logging system for all debug output
 3. Test threading scenarios with the debug flags
 4. Archive files before modifications (automatic backup system)
-
-## 📄 License
-
-[Add your license here]
 
 ---
 
